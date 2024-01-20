@@ -2,6 +2,10 @@
 
 Snapmaker2-Controller is the firmware for Snapmaker 2.0 3-in-1 3D Printers. It's based on the popular [Marlin firmware](http://marlinfw.org/) with optimized FreeRTOS support.
 
+## Changes to Main
+- [IR Sensor mod](https://www.thingiverse.com/thing:4895144)
+- Adaption for smaller glas Bed
+
 ## Documentation
 
 Snapmaker2-Controller builds on the codebase of Marlin 2.0, we also added some new features:

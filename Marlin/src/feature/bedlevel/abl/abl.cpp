@@ -449,16 +449,32 @@ float bilinear_z_offset(const float raw[XYZ]) {
  */
 void bilinear_grid_manual()
 {
+
+  #define GLASSBED 
+
+  #ifdef GLASSBED
+
+
+  MAGNET_X_SPAN = 274;
+  MAGNET_Y_SPAN = 290;
+
+  #endif
+
+
   float startx, starty, endx, endy;
   startx = X_DEF_SIZE / 2.0 - MAGNET_X_SPAN / 2.0;
   endx = X_DEF_SIZE / 2.0 + MAGNET_X_SPAN / 2.0;
   starty = Y_DEF_SIZE / 2.0 - MAGNET_Y_SPAN / 2.0;
   endy = Y_DEF_SIZE / 2.0 + MAGNET_Y_SPAN / 2.0;
 
+
+  
+
   bilinear_grid_spacing[X_AXIS] = (endx - startx) / (GRID_MAX_POINTS_X - 1);
-  bilinear_grid_spacing[Y_AXIS] = (endy - starty) / (GRID_MAX_POINTS_Y - 1);
-  bilinear_start[X_AXIS] = RAW_X_POSITION(startx);
-  bilinear_start[Y_AXIS] = RAW_Y_POSITION(starty);
+    bilinear_grid_spacing[Y_AXIS] = (endy - starty) / (GRID_MAX_POINTS_Y - 1);
+    bilinear_start[X_AXIS] = RAW_X_POSITION(startx);
+    bilinear_start[Y_AXIS] = RAW_Y_POSITION(starty);
+
   SERIAL_ECHOLNPAIR("X:", bilinear_start[X_AXIS], " - ", bilinear_grid_spacing[X_AXIS]);
   SERIAL_ECHOLNPAIR("Y:", bilinear_start[Y_AXIS], " - ", bilinear_grid_spacing[Y_AXIS]);
 }
@@ -477,7 +493,7 @@ uint8_t auto_probing(bool reply_screen, bool fast_leveling) {
   float z;
 
   int dir_idx = 0;
-  do_blocking_move_to_z(15, 10);
+  // do_blocking_move_to_z(15, 10);
 
   for (uint32_t k = 0; k < GRID_MAX_POINTS_X * GRID_MAX_POINTS_Y; ++k) {
     LOG_I("Probing No. %d\n", k);
