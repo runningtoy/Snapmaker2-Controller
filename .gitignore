@@ -151,7 +151,7 @@ snapmaker/scripts/env*.txt
 *.vcxproj
 *.vcxproj.user
 *.vcxproj.filters
-#Release/
+Release/
 Debug/
 __vm/
 .vs/
