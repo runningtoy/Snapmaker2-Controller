@@ -38,6 +38,7 @@
 #include "module/temperature.h"
 #include "module/configuration_store.h"
 #include "module/printcounter.h" // PrintCounter or Stopwatch
+#include "module/ft_motion.h"
 #include "feature/closedloop.h"
 #include "HAL/shared/Delay.h"
 #include <EEPROM.h>
@@ -256,7 +257,7 @@ millis_t max_inactive_time, // = 0
   float l_home_offset_laser[XN] = L_HOME_OFFSET_LASER_DEFAULT;
 
   bool integration_toolhead = false;
-  bool quick_change_adapter = false;   /*if more types need to be supported you need to modify the variable type of quick_change_adapter*/
+  uint8_t kit_combination_type = DEFAULT_KIT_COMBINATION_TYPE;
 
   float print_min_planner_speed = MINIMUM_PRINT_PLANNER_SPEED;
   float laser_min_planner_speed = MINIMUM_LASER_PLANNER_SPEED;
@@ -334,12 +335,14 @@ void set_min_planner_speed() {
       planner.min_planner_speed = print_min_planner_speed;
       break;
     case MODULE_TOOLHEAD_CNC:
+    case MODULE_TOOLHEAD_CNC_200W:
       planner.min_planner_speed = cnc_min_planner_speed;
       break;
     case MODULE_TOOLHEAD_LASER:
     case MODULE_TOOLHEAD_LASER_10W:
     case MODULE_TOOLHEAD_LASER_20W:
     case MODULE_TOOLHEAD_LASER_40W:
+    case MODULE_TOOLHEAD_LASER_RED_2W:
       planner.min_planner_speed = laser_min_planner_speed;
       break;
     default:
@@ -529,6 +532,7 @@ void disable_all_steppers() {
         enqueue_and_echo_commands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
     #else
       systemservice.PauseTrigger(TRIGGER_SOURCE_RUNOUT);
+      RunoutResponseDelayed::modify_runout_distance_mm(FILAMENT_RUNOUT_DISTANCE_MM);
     #endif
   }
 
@@ -868,6 +872,12 @@ void idle(
   #if ENABLED(PRUSA_MMU2)
     mmu2.mmuLoop();
   #endif
+
+  ftMotion.loop();
+
+  Serial.check_dma();
+  Serial1.check_dma();
+  Serial2.check_dma();
 }
 
 /**
@@ -1120,6 +1130,8 @@ void setup() {
   endstops.enable_z_probe(false);
 
   stepper.init();           // Init stepper. This enables interrupts!
+
+  ftMotion.init();
 
   #if HAS_SERVOS
     servo_init();

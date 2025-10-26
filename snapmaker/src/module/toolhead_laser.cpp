@@ -42,13 +42,21 @@
 #define LASER_CLOSE_FAN_DELAY     (300)
 #define LASER_DISABLE_DELAY       (5)
 
+#define LASER_RED_2W_FLOOR_DEFAULT              (50)
+#define LASER_OTHER_FLOOR_DEFAULT               (0)
+
 #define TimSetPwm(n)  Tim1SetCCR4(n)
 #define TimGetPwm()  Tim1GetCCR4()
+
+/* The mapping relationship between hardware version number and module type */
+#define LASER_RED_2W_HW_VER_BASE_GUANGYUAN      (0)       /**< guangyuan */
+#define LASER_RED_2W_HW_VER_BASE_LIANPIN        (10)      /**< lianpin */
 
 ToolHeadLaser laser_1_6_w(MODULE_DEVICE_ID_1_6_W_LASER);
 ToolHeadLaser laser_10w(MODULE_DEVICE_ID_10W_LASER);
 ToolHeadLaser laser_20w(MODULE_DEVICE_ID_20W_LASER);
 ToolHeadLaser laser_40w(MODULE_DEVICE_ID_40W_LASER);
+ToolHeadLaser laser_red_2w(MODULE_DEVICE_ID_LASER_RED_2W_2023);
 ToolHeadLaser *laser = &laser_1_6_w;
 
 extern void Tim1SetCCR4(uint16_t pwm);
@@ -105,6 +113,34 @@ static __attribute__((section(".data"))) uint8_t power_table_40W[]= {
   255
 };
 
+static __attribute__((section(".data"))) uint8_t power_table_red_2w_guangyuan[]= {
+  0, 15, 27, 29, 32, 35, 37, 40, 42, 45,
+  47, 49, 51, 54, 56, 59, 61, 63, 65, 68,
+  70, 72, 75, 77, 79, 82, 84, 87, 90, 92,
+  94, 97, 99, 101, 103, 106, 108, 110, 112, 115,
+  117, 120, 122, 124, 126, 128, 131, 133, 135, 138,
+  140, 142, 144, 147, 149, 151, 153, 156, 158, 161,
+  163, 166, 168, 171, 173, 176, 178, 180, 182, 185,
+  188, 190, 192, 193, 195, 198, 200, 202, 204, 207,
+  209, 212, 214, 216, 218, 221, 224, 226, 228, 230,
+  233, 235, 239, 241, 242, 245, 247, 250, 252, 254,
+  255
+};
+
+static __attribute__((section(".data"))) uint8_t power_table_red_2w_lianpin[]= {
+  0, 15, 27, 29, 32, 35, 37, 40, 42, 45,
+  47, 49, 51, 54, 56, 59, 61, 63, 65, 68,
+  70, 72, 75, 77, 79, 82, 84, 87, 90, 92,
+  94, 97, 99, 101, 103, 106, 108, 110, 112, 115,
+  117, 120, 122, 124, 126, 128, 131, 133, 135, 138,
+  140, 142, 144, 147, 149, 151, 153, 156, 158, 161,
+  163, 166, 168, 171, 173, 176, 178, 180, 182, 185,
+  188, 190, 192, 193, 195, 198, 200, 202, 204, 207,
+  209, 212, 214, 216, 218, 221, 224, 226, 228, 230,
+  233, 235, 239, 241, 242, 245, 247, 250, 252, 254,
+  255
+};
+
 static void CallbackAckLaserFocus(CanStdDataFrame_t &cmd) {
   laser->focus(cmd.data[0]<<8 | cmd.data[1]);
 }
@@ -116,7 +152,7 @@ static void CallbackAckReportSecurity(CanStdDataFrame_t &cmd) {
   laser->laser_temperature_ = cmd.data[5];
   laser->imu_temperature_ = (int8_t)cmd.data[6];
 
-  if ((laser->device_id() == MODULE_DEVICE_ID_40W_LASER || laser->device_id() == MODULE_DEVICE_ID_20W_LASER))
+  if (laser->is_there_fire_sensor())
     laser->fire_sensor_trigger_ = cmd.data[7];
 
   laser->need_to_tell_hmi_ = true;
@@ -152,6 +188,16 @@ static void CallbackAckReportFireSensorRawData(CanStdDataFrame_t &cmd) {
   laser->fire_sensor_rawdata_ = cmd.data[0] | (cmd.data[1]<<8);
   LOG_I("frd: %d\n", laser->fire_sensor_rawdata_);
 }
+
+static void CallbackAckGetWeakLightPower(CanStdDataFrame_t &cmd) {
+  laser->weak_light_power_ = *(float *)(&cmd.data[0]);
+  laser->weak_light_power_update_ = true;
+}
+
+static void CallbackAckSetWeakLightPower(CanStdDataFrame_t &cmd) {
+  laser->weak_light_power_ = *(float *)(&cmd.data[1]);
+}
+
 
 
 ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
@@ -215,6 +261,12 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
     else if (function.id == MODULE_FUNC_REPORT_FIRE_SENSOR_RAWDATA) {
       message_id[i] = canhost.RegisterFunction(function, CallbackAckReportFireSensorRawData);
     }
+    else if (function.id == MODULE_FUNC_GET_LASER_WEAK_POWER) {
+      message_id[i] = canhost.RegisterFunction(function, CallbackAckGetWeakLightPower);
+    }
+    else if (function.id == MODULE_FUNC_SET_LASER_WEAK_POWER) {
+      message_id[i] = canhost.RegisterFunction(function, CallbackAckSetWeakLightPower);
+    }
     else {
       message_id[i] = canhost.RegisterFunction(function, NULL);
     }
@@ -224,6 +276,7 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   }
 
   ret = canhost.BindMessageID(cmd, message_id);
+  inline_pwm_power_floor = LASER_OTHER_FLOOR_DEFAULT;
 
   if (MODULE_DEVICE_ID_10W_LASER == device_id() || MODULE_DEVICE_ID_1_6_W_LASER == device_id()) {
     Tim1PwmInit(1862, 254);     // 1.6w & 10w, no modification of the old laser control frequency for the time being  // 250Hz
@@ -241,18 +294,48 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   power_table_ = power_table_1_6W;
   if (laser->device_id_ == MODULE_DEVICE_ID_1_6_W_LASER) {
     power_table_ = power_table_1_6W;
+    weak_light_power_ = LASER_1_6W_DEFAULT_WEAK_POWER;
     SetToolhead(MODULE_TOOLHEAD_LASER);
   } else if (laser->device_id_ == MODULE_DEVICE_ID_10W_LASER) {
     power_table_ = power_table_10W;
+    weak_light_power_ = LASER_10W_DEFAULT_WEAK_POWER;
     SetToolhead(MODULE_TOOLHEAD_LASER_10W);
   }
   else if (laser->device_id_ == MODULE_DEVICE_ID_20W_LASER) {
     power_table_ = power_table_20W;
+    weak_light_power_ = LASER_20W_40W_DEFAULT_WEAK_POWER;
     SetToolhead(MODULE_TOOLHEAD_LASER_20W);
   }
   else if (laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
     power_table_ = power_table_40W;
+    weak_light_power_ = LASER_20W_40W_DEFAULT_WEAK_POWER;
     SetToolhead(MODULE_TOOLHEAD_LASER_40W);
+  }
+  else if (laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) {
+    LOG_I("get hw verion\r\n");
+    /* This is a temporary plan, we will optimize it later. */
+    for (uint32_t retry = 0; retry < 5; retry++) {
+      if (LaserGetHWVersion(hw_version_) == E_SUCCESS) {
+        break;
+      }
+      /* Please do not delete this comment!!! */
+      LOG_I("retry....\r\n");
+    }
+    if (255 == hw_version_) {
+      hw_version_ = LASER_RED_2W_HW_VER_BASE_LIANPIN;
+    }
+    
+    LOG_I("2w red laser hw_version =  %d\n", hw_version_);
+    /* guangyuan */
+    if (hw_version_ >= LASER_RED_2W_HW_VER_BASE_GUANGYUAN && hw_version_ <= LASER_RED_2W_HW_VER_BASE_GUANGYUAN + 9) {
+      power_table_ = power_table_red_2w_guangyuan;
+    }
+    /* lianpin */
+    else {
+      power_table_ = power_table_red_2w_lianpin;
+    }
+    inline_pwm_power_floor = LASER_RED_2W_FLOOR_DEFAULT;
+    SetToolhead(MODULE_TOOLHEAD_LASER_RED_2W);
   }
 
   return E_SUCCESS;
@@ -293,22 +376,29 @@ bool ToolHeadLaser::SetWeakLightOriginMode(bool mode) {
 }
 
 void ToolHeadLaser::PrintInfo(void) {
-  if (laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
+  SSTP_Event_t event;
+  GetSecurityStatus(event);
+  
+  if (is_there_cross_light()) {
     float x_offset, y_offset;
     GetCrossLightOffsetCAN(x_offset, y_offset);
   }
 
   LOG_I("power limit pwm %d\n", power_limit_pwm_);
   LOG_I("power_pwm_ %d\n", power_pwm_);
+  LOG_I("weak_light_power_ %f\n", weak_light_power_);
   LOG_I("power_val_ %f\n", power_val_);
   LOG_I("security_status_ %d\n", security_status_);
   LOG_I("laser_temperature_ %d\n", laser_temperature_);
-  LOG_I("imu_temperature_ %d\n", imu_temperature_);
+  // LOG_I("imu_temperature_ %d\n", imu_temperature_);
   LOG_I("fire_sensor_trigger_: %s\n", fire_sensor_trigger_ ? "TRIGGER" : "NORMAL");
   LOG_I("fire_sensor_trigger_adc_value_ %d\n", fire_sensor_trigger_value_);
-  LOG_I("crosslight_offset_x %f, crosslight_offset_y %f\n", crosslight_offset_x, crosslight_offset_y);
+  // LOG_I("crosslight_offset_x %f, crosslight_offset_y %f\n", crosslight_offset_x, crosslight_offset_y);
   LOG_I("half_power_mode_: %s\n", half_power_mode_ ? "OPEN" : "CLOSE");
   LOG_I("inline enable: %d, inline power pwm: %d\n", planner.laser_inline.status.isEnabled, planner.laser_inline.power);
+  LOG_I("air_pump_switch_: %d\n", air_pump_switch_);
+  LOG_I("hw_version = %d\n", hw_version_);
+  show_important_info_1();
 }
 
 uint16_t ToolHeadLaser::tim_pwm() {
@@ -323,12 +413,13 @@ void ToolHeadLaser::TurnOn() {
     return;
 
   if ((laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) && laser->security_status_ != 0) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) && 
+      laser->security_status_ != 0) {
     return;
   }
 
   if (laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) {
     if (laser_status_ == LASER_DISABLE) {
       // Send the enable command only when the power is disabled
       LaserControl(1);
@@ -355,7 +446,7 @@ void ToolHeadLaser::TurnOff() {
     return;
 
   if (laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) {
     if (laser_status_ != LASER_DISABLE) {
       laser_status_ = LASER_WAIT_DISABLE;
       laser_tick_ = 0;
@@ -369,7 +460,8 @@ void ToolHeadLaser::TurnOff() {
 
 void ToolHeadLaser::SetOutput(float power, bool is_map) {
   if ((laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) && laser->security_status_ != 0) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) && 
+      laser->security_status_ != 0) {
     return;
   }
 
@@ -407,11 +499,6 @@ void ToolHeadLaser::SetPower(float power, bool is_map) {
     power_pwm_ = (uint16_t)(power * 255.0 / 100.0);
     LIMIT(power_pwm_, 0, 255);
   }
-
-  if (power_pwm_ > power_limit_pwm_)
-    power_pwm_ = power_limit_pwm_;
-
-  // LOG_I("set power_pwm_: %d\n", power_pwm_);
 }
 
 
@@ -431,7 +518,7 @@ void ToolHeadLaser::SetPowerLimit(float limit) {
     TurnOn();
 }
 
-void ToolHeadLaser::SetFanPower(uint8_t power) {
+void ToolHeadLaser::SetFanPower(uint8_t power, bool update_fan_sta) {
   CanStdMesgCmd_t cmd;
   uint8_t         buffer[2];
   buffer[0]  = 0;
@@ -439,6 +526,13 @@ void ToolHeadLaser::SetFanPower(uint8_t power) {
   cmd.id     = msg_id_set_fan_;
   cmd.data   = buffer;
   cmd.length = 2;
+
+  if (update_fan_sta) {
+    if (power != 0)
+      fan_state_ = TOOLHEAD_LASER_FAN_STATE_OPEN;
+    else
+      fan_state_ = TOOLHEAD_LASER_FAN_STATE_CLOSED;
+  }
 
   canhost.SendStdCmd(cmd);
 }
@@ -455,6 +549,7 @@ void ToolHeadLaser::CheckFan(uint16_t pwm) {
   case TOOLHEAD_LASER_FAN_STATE_TO_BE_CLOSED:
     if (pwm > 0) {
       fan_state_ = TOOLHEAD_LASER_FAN_STATE_OPEN;
+      SetFanPower(255);
       fan_tick_  = 0;
     }
     break;
@@ -477,6 +572,7 @@ void ToolHeadLaser::TryCloseFan() {
       fan_tick_  = 0;
       fan_state_ = TOOLHEAD_LASER_FAN_STATE_CLOSED;
       SetFanPower(0);
+      set_module_standby_mode(true);
     }
   }
   else {
@@ -521,6 +617,54 @@ ErrCode ToolHeadLaser::GetCrossLightCAN(bool &sw) {
     LOG_E("Get Cross Light time out\n");
     return E_TIMEOUT;
   }
+}
+
+
+ErrCode ToolHeadLaser::GetWeakLightPowerCAN(float &power) {
+  CanStdFuncCmd_t cmd;
+  cmd.id        = MODULE_FUNC_GET_LASER_WEAK_POWER;
+  cmd.length    = 0;
+  weak_light_power_update_ = false;
+  ErrCode ret = canhost.SendStdCmd(cmd);
+  if (E_SUCCESS != ret) {
+    LOG_E("Get Weak Light Power msg failed, ret: %d\n", ret);
+    return ret;
+  }
+
+  int32_t max_try = 500;
+  while(!weak_light_power_update_ && max_try--) vTaskDelay(pdMS_TO_TICKS(1));
+  if (max_try >= 0) {
+    power = weak_light_power_;
+    LOG_I("Get Weak Light Power: %f\n", weak_light_power_);
+    return E_SUCCESS;
+  }
+  else {
+    LOG_E("Get Weak Light Power E_TIMEOUT\n");
+    return E_TIMEOUT;
+  }
+}
+
+ErrCode ToolHeadLaser::SetWeakLightPowerCAN(float power) {
+  CanStdFuncCmd_t cmd;
+  uint8_t buffer[8];
+
+  LOG_I("Set Weak Light Power: %f\n", power);
+  if (power > LASER_WEAK_POWER_MAX_LIMIT) {
+    power = LASER_WEAK_POWER_MAX_LIMIT;
+    LOG_I("Weak Light Power limited to %f\n", LASER_WEAK_POWER_MAX_LIMIT);
+  }
+
+  if (power < LASER_WEAK_POWER_MIN_LIMIT) {
+    power = LASER_WEAK_POWER_MIN_LIMIT;
+    LOG_I("Weak Light Power limited to %f\n", LASER_WEAK_POWER_MIN_LIMIT);
+  }
+
+  *(float *)(&buffer[0]) = power;
+  cmd.id        = MODULE_FUNC_SET_LASER_WEAK_POWER;
+  cmd.data      = buffer;
+  cmd.length    = 4;
+
+  return canhost.SendStdCmd(cmd);
 }
 
 ErrCode ToolHeadLaser::SetFireSensorSensitivityCAN(uint16 sen) {
@@ -789,7 +933,7 @@ ErrCode ToolHeadLaser::DoAutoFocusing(SSTP_Event_t &event) {
   float line_len_short = 5;
   float line_len_long = 10;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Laser 20W or 40W do not support auto focusing\n");
     goto out;
   }
@@ -889,7 +1033,7 @@ ErrCode ToolHeadLaser::ReadBluetoothInfo(LaserCameraCommand cmd, uint8_t *out, u
 
   ErrCode  ret = E_SUCCESS;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Read BT info failed, Laser 20W or 40W do not have any bluetooth\n");
     return E_FAILURE;
   }
@@ -943,7 +1087,7 @@ ErrCode ToolHeadLaser::SetBluetoothInfo(LaserCameraCommand cmd, uint8_t *info, u
   uint8_t  buffer[72];
   ErrCode  ret;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Set BT info failed, Laser 20W or 40W do not have any blutooth\n");
     return E_INVALID_CMD;
   }
@@ -987,7 +1131,7 @@ out:
 ErrCode ToolHeadLaser::SetCameraBtName(SSTP_Event_t &event) {
   ErrCode err = E_FAILURE;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Set BT Name failed, Laser 20W or 40W do not have any blutooth\n");
     err = E_INVALID_CMD;
     event.data   = &err;
@@ -1010,7 +1154,7 @@ ErrCode ToolHeadLaser::GetCameraBtName(SSTP_Event_t &event) {
   uint8_t buffer[40] = {0};
   ErrCode ret;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Req BT Name failed, Laser 20W or 40W do not have any blutooth\n");
     ErrCode err = E_INVALID_CMD;
     event.data   = &err;
@@ -1046,7 +1190,7 @@ ErrCode ToolHeadLaser::GetCameraBtMAC(SSTP_Event_t &event) {
   uint8_t buffer[16] = {0};
   ErrCode ret;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Get BT MAC failed, Laser 20W or 40W do not have any blutooth\n");
     ErrCode err = E_INVALID_CMD;
     event.data   = &err;
@@ -1087,7 +1231,7 @@ ErrCode ToolHeadLaser::ReadBluetoothVer() {
   uint16_t size;
   ErrCode ret = E_SUCCESS;
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Read BT version failed, Laser 20W or 40W do not have any blutooth\n");
     return E_FAILURE;
   }
@@ -1111,7 +1255,7 @@ void ToolHeadLaser::SetCameraLight(uint8_t state) {
   SSTP_Event_t  event = {M_SET_CAMERA_LIGHT, 0, 0, NULL};
   uint8_t buff[1];
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Set Laser Camera light failed, Laser 20W or 40W do not have blutooth\n");
     return;
   }
@@ -1127,7 +1271,7 @@ ErrCode ToolHeadLaser::SetAutoFocusLight(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1];
 
-  if (MODULE_DEVICE_ID_20W_LASER == device_id() || MODULE_DEVICE_ID_40W_LASER == device_id()) {
+  if (!is_there_camera()) {
     LOG_E("Laser 20W or 40W do not have any focuslight\n");
     uint8_t err = E_INVALID_CMD;
     event.data   = &err;
@@ -1229,7 +1373,7 @@ ErrCode ToolHeadLaser::SetOnlineSyncId(SSTP_Event_t &event) {
 
 ErrCode ToolHeadLaser::GetOnlineSyncId(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
-  uint8_t can_buffer[1];
+  uint8_t can_buffer[5];
 
   can_buffer[0] = 0;
   cmd.id        = MODULE_FUNC_ONLINE_SYNC;
@@ -1465,6 +1609,43 @@ ErrCode ToolHeadLaser::GetCrosslightOffset(SSTP_Event_t &event) {
   return hmi.Send(event_tmp);
 }
 
+ErrCode ToolHeadLaser::GetWeakLightPower(SSTP_Event_t &event) {
+  float power;
+  uint8_t buff[20];
+  uint16_t len = 0;
+  LOG_I("HMI get laser weak power\n");
+  SSTP_Event_t event_tmp = {EID_SETTING_ACK, SETTINGS_OPC_GET_WEAK_POWER};
+  buff[len++] = GetWeakLightPowerCAN(power);
+  power = weak_light_power_ * 1000;
+  buff[len++] = (((int32_t)power) >> 24) & 0xFF;
+  buff[len++] = (((int32_t)power) >> 16) & 0xFF;
+  buff[len++] = (((int32_t)power) >> 8) & 0xFF;
+  buff[len++] = (((int32_t)power) >> 0) & 0xFF;
+
+  event_tmp.length = len;
+  event_tmp.data = buff;
+  return hmi.Send(event_tmp);
+}
+
+ErrCode ToolHeadLaser::SetWeakLightPower(SSTP_Event_t &event) {
+  uint8_t buff[1];
+  LOG_I("HMI set laser weak power\n");
+  if (event.length < 4) {
+    LOG_E("Hmi SetCrosslightOffset parameter error\n");
+    buff[0] = E_PARAM;
+  }
+  else {
+    int32_t power = (event.data[0] << 24) | (event.data[1] << 16) | (event.data[2] << 8) | (event.data[3] << 0);
+    float tmp_power = (float)power / 1000.0;
+    buff[0] = SetWeakLightPowerCAN(tmp_power);
+  }
+
+  SSTP_Event_t event_hmi = {EID_SETTING_ACK, SETTINGS_OPC_SET_WEAK_POWER};
+  event_hmi.length = 1;
+  event_hmi.data = buff;
+  return hmi.Send(event_hmi);
+}
+
 ErrCode ToolHeadLaser::SetWeakLightOriginWork(SSTP_Event_t &event) {
   uint8_t buff[20];
   uint16_t len = 0;
@@ -1488,10 +1669,12 @@ ErrCode ToolHeadLaser::SetWeakLightOriginWork(SSTP_Event_t &event) {
 
 void ToolHeadLaser::TellSecurityStatus() {
   SendSecurityStatus();
-  SERIAL_ECHO("Laser security state: 0x");
-  SERIAL_PRINTLN(laser->security_status_, HEX);
-
-  SERIAL_ECHOLNPAIR("Laser temp: ", laser->laser_temperature_, ", imu temp: ", laser->imu_temperature_, ", roll: ", laser->roll_, ", pitch: ", laser->pitch_, ", pwm_pin_pulldown_state_: ", laser->pwm_pin_pulldown_state_, ", pwm_pin_pullup_state_: ", laser->pwm_pin_pullup_state_);
+  // SERIAL_ECHO("Laser security state: 0x");
+  // SERIAL_PRINTLN(laser->security_status_, HEX);
+  // SERIAL_ECHOLNPAIR("Laser temp: ", laser->laser_temperature_, ", imu temp: ", laser->imu_temperature_, ", roll: ", laser->roll_, ", pitch: ", laser->pitch_, ", pwm_pin_pulldown_state_: ", laser->pwm_pin_pulldown_state_, ", pwm_pin_pullup_state_: ", laser->pwm_pin_pullup_state_);
+  LOG_I("Laser security state: 0x%x\n", laser->security_status_);
+  LOG_I("Laser temp: %d, imu temp: %d, roll: %d, pitch: %d, pwm_pin_pulldown_state_: %d, pwm_pin_pullup_state_: %d\n", \
+          laser->laser_temperature_, laser->imu_temperature_, laser->roll_, laser->pitch_, laser->pwm_pin_pulldown_state_, laser->pwm_pin_pullup_state_);
 }
 
 uint8_t ToolHeadLaser::LaserGetPwmPinState() {
@@ -1528,7 +1711,7 @@ void ToolHeadLaser::Process() {
   timer_in_process_ = 0;
 
   if (laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023) {
     if (laser_pwm_pin_checked_ == false) {
       PwmCtrlDirectly(255);
       pwm_pin_pulldown_state_ = LaserGetPwmPinState();
@@ -1571,7 +1754,7 @@ void ToolHeadLaser::SetOutputInline(uint16_t power_pwm, bool is_sync_power) {
     planner.laser_inline.sync_power = power_pwm * 100.0 / 255.0;
 
   if ((laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER ||
-      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER)) {
+      laser->device_id_ == MODULE_DEVICE_ID_40W_LASER || laser->device_id_ == MODULE_DEVICE_ID_LASER_RED_2W_2023)) {
     if (power_pwm > 0) {
       if (laser_status_ == LASER_DISABLE) {
         // Send the enable command only when the power is disabled
@@ -1605,3 +1788,200 @@ void ToolHeadLaser::TurnOn_ISR(uint16_t power_pwm, bool is_sync_power, float pow
 
   TimSetPwm(power_pwm);
 }
+
+/**
+ * @brief Check for the presence of flame sensor
+ * 
+ * @return true
+ * @return false
+ */
+bool ToolHeadLaser::is_there_fire_sensor(void) {
+  bool ret = false;
+
+  switch (laser->device_id_) {
+    case MODULE_DEVICE_ID_20W_LASER:
+    case MODULE_DEVICE_ID_40W_LASER: {
+      ret = true;
+    }
+    break;
+    
+    default: {
+      ret = false;
+    }
+    break;
+  };
+
+  return ret;
+}
+
+/**
+ * @brief check for the presence of camera
+ * 
+ * @return true
+ * @return false
+ */
+bool ToolHeadLaser::is_there_camera(void) {
+  bool ret = false;
+
+  switch (laser->device_id_) {
+    case MODULE_DEVICE_ID_1_6_W_LASER:
+    case MODULE_DEVICE_ID_10W_LASER: {
+      ret = true;
+    }
+    break;
+    
+    default: {
+      ret = false;
+    }
+    break;
+  };
+
+  return ret;
+}
+
+/**
+ * @brief check for the presence of cross-light
+ * 
+ * @return true
+ * @return false
+ */
+bool ToolHeadLaser::is_there_cross_light(void) {
+  bool ret = false;
+
+  switch (laser->device_id_) {
+    case MODULE_DEVICE_ID_20W_LASER:
+    case MODULE_DEVICE_ID_40W_LASER:
+    case MODULE_DEVICE_ID_LASER_RED_2W_2023:{
+      ret = true;
+    }
+    break;
+    
+    default: {
+      ret = false;
+    }
+    break;
+  };
+
+  return ret;
+}
+
+ErrCode ToolHeadLaser::LaserGetHWVersion(uint8_t &version) {
+  CanStdFuncCmd_t cmd;
+  uint8_t buff[1] = {0};
+  ErrCode ret = E_FAILURE;
+
+  cmd.id        = MODULE_FUNC_GET_HW_VERSION;
+  cmd.data      = buff;
+  cmd.length    = 0;
+  
+  ret = canhost.SendStdCmdSync(cmd, 200);
+  if (E_SUCCESS != ret) {
+    /* This is a temporary plan, we will optimize it later. */
+    /* Please do not delete this comment!!! */
+    LOG_E("failed to GetHWVersion! ret: %u\n", ret);
+  }
+  else {
+    version = cmd.data[0];
+  }
+
+  return ret;
+}
+
+ErrCode ToolHeadLaser::set_get_protect_temp(int8_t &protect_upper, int8_t &recovery_upper, int8_t &protect_lower, int8_t &recovery_lower) {
+  CanStdFuncCmd_t cmd;
+  ErrCode ret = E_FAILURE;
+  int8_t buff[4] = {protect_upper, recovery_upper, protect_lower, recovery_lower};
+
+  cmd.id        = MODULE_FUNC_SET_GET_PROTECT_TEMP;
+  cmd.data      = (uint8_t*)buff;
+  cmd.length    = sizeof(buff);
+
+  ret = canhost.SendStdCmdSync(cmd, 200);
+  if (E_SUCCESS != ret) {
+    LOG_E("failed to set_get_protect_temp! ret: %u\n", ret);
+  }
+  else {
+    protect_upper = cmd.data[0];
+    recovery_upper = cmd.data[1];
+    protect_lower = cmd.data[2];
+    recovery_lower = cmd.data[3];
+  }
+
+  return ret;
+}
+
+void ToolHeadLaser::show_important_info_1(void) {
+  CanStdFuncCmd_t cmd;
+  uint8_t recv_buffer[8] = {0};
+  ErrCode ret = E_FAILURE;
+
+  cmd.id        = MODULE_FUNC_GET_IMPORTANT_INFO_1_FOR_DBG;
+  cmd.data      = recv_buffer;
+  cmd.length    = sizeof(recv_buffer);
+
+  ret = canhost.SendStdCmdSync(cmd, 200);
+  if (E_SUCCESS != ret) {
+    return;
+  }
+
+  int32_t tmp = 0;
+  if (MODULE_DEVICE_ID_LASER_RED_2W_2023 == laser->device_id_) {
+    /* guangyuan 2W */
+    if (hw_version_ >= LASER_RED_2W_HW_VER_BASE_GUANGYUAN && hw_version_ <= LASER_RED_2W_HW_VER_BASE_GUANGYUAN + 9) {
+      tmp = recv_buffer[6] << 8 | recv_buffer[7];
+      LOG_I("Casing: %f\n", (float)(tmp / 10.0));
+    }
+    /* lianpin 2W */
+    else if (hw_version_ >= LASER_RED_2W_HW_VER_BASE_LIANPIN && hw_version_ <= LASER_RED_2W_HW_VER_BASE_LIANPIN + 9) {
+      LOG_I("all_param_normal_flag: %u\n", recv_buffer[0]);
+      tmp = recv_buffer[1];
+      LOG_I("TEC normal temp: %d\n", tmp);
+      tmp = recv_buffer[2] << 8 | recv_buffer[3];
+      LOG_I("active current: %d\n", tmp);
+      tmp = recv_buffer[4] << 8 | recv_buffer[5];
+      LOG_I("inactive current: %d\n", tmp);
+      tmp = recv_buffer[6] << 8 | recv_buffer[7];
+      LOG_I("Casing: %f\n", (float)(tmp / 10.0));
+    }
+    else {
+    }
+  }
+}
+
+bool ToolHeadLaser::is_there_standby_mode(void) {
+  bool ret = false;
+
+  switch (laser->device_id_) {
+    case MODULE_DEVICE_ID_LASER_RED_2W_2023: {
+      ret = true;
+    }
+    break;
+    
+    default: {
+      ret = false;
+    }
+    break;
+  };
+
+  return ret;
+}
+
+ErrCode ToolHeadLaser::set_module_standby_mode(bool standby) {
+  CanStdFuncCmd_t cmd;
+  uint8_t buffer[1];
+
+  if (!is_there_standby_mode()) {
+    LOG_E("not supports standby-mode\r\n");
+    return E_FAILURE;
+  }
+
+  buffer[0]     = standby;
+  cmd.id        = MODULE_FUNC_SET_STANDBY;
+  cmd.data      = buffer;
+  cmd.length    = 1;
+
+  LOG_I("Set standby mode %s\n", standby ? "true" : "false");
+
+  return canhost.SendStdCmd(cmd);
+}
+

@@ -73,6 +73,8 @@ bool GcodeSuite::axis_relative_modes[] = AXIS_RELATIVE_MODES;
   float GcodeSuite::coordinate_system[MAX_COORDINATE_SYSTEMS][XN];
 #endif
 
+settings_on_toolhead_t GcodeSuite::backup_homing;
+
 /**
  * Get the target extruder from the T parameter or the active_extruder
  * Return -1 if the T parameter is out of range
@@ -107,10 +109,25 @@ void GcodeSuite::get_destination_from_command() {
         ? current_position[i] + v
         : (i == E_AXIS) ? v : LOGICAL_TO_NATIVE(v, i);
 
-      if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) {
+      if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead() ||
+          MODULE_TOOLHEAD_LASER_RED_2W == ModuleBase::toolhead()) {
         if (systemservice.GetCurrentStatus() == SYSTAT_WORK && !laser->GetWeakLightOriginMode()) {
-          if (i <= Y_AXIS && (!laser->CheckCrossLightOffset(laser_crosslight_offset[X_AXIS], laser_crosslight_offset[Y_AXIS])))
-            destination[i] += laser_crosslight_offset[i];
+          if (i <= Y_AXIS && (!laser->CheckCrossLightOffset(laser_crosslight_offset[X_AXIS], laser_crosslight_offset[Y_AXIS]))) {
+            if (relative_mode) {
+              // interim solutions, suspend resume in relative_mode work is not currently supported and needs further adaptation
+              if (laser->GetXyOffsetApplication() & (1 << i)) {
+                destination[i] += laser_crosslight_offset[i];
+                laser->ClearXyOffsetApplicationByIndex(i);
+              }
+              // if (!laser->GetXyOffsetApplication()) {
+              //   laser->SetWeakLightOriginMode(true);
+              // }
+            }
+            else{
+              destination[i] += laser_crosslight_offset[i];
+              laser->ClearXyOffsetApplicationByIndex(i);
+            }
+          }
         }
       }
     }
@@ -165,6 +182,7 @@ void GcodeSuite::get_destination_from_command() {
         planner.laser_inline.status.is_sync_power = true;
         planner.laser_inline.status.power_is_map = true;
       }
+      planner.laser_inline.status.isEnabled = true;
       // LOG_I("S: %f, P: %f\n", power_pwm, power);
     }
   }
@@ -180,6 +198,51 @@ void GcodeSuite::get_destination_from_command() {
 void GcodeSuite::dwell(millis_t time) {
   time += millis();
   while (PENDING(millis(), time)) idle();
+}
+
+/**
+ * Called before returning to home, generally used to back up setting information
+ * 
+ */
+void GcodeSuite::do_before_home(void) {
+  backup_homing.acceleration = planner.settings.acceleration;
+  backup_homing.retract_acceleration = planner.settings.retract_acceleration;
+  backup_homing.travel_acceleration = planner.settings.travel_acceleration;
+  LOOP_X_TO_EN(i) {
+    backup_homing.max_acceleration_mm_per_s2[i] = planner.settings.max_acceleration_mm_per_s2[i];
+    backup_homing.max_feedrate_mm_s[i] = planner.settings.max_feedrate_mm_s[i];
+  }
+  backup_homing.ft_mode = (uint32_t)ftMotion.disable();
+
+  planner.settings.acceleration = DEFAULT_ACCELERATION;
+  planner.settings.retract_acceleration = DEFAULT_RETRACT_ACCELERATION;
+  planner.settings.travel_acceleration = DEFAULT_TRAVEL_ACCELERATION;                                           
+  uint32_t tmp_max_acceleration[X_TO_EN] = DEFAULT_MAX_ACCELERATION;
+  float tmp_max_feedrate[X_TO_EN] = DEFAULT_MAX_FEEDRATE;
+  LOOP_X_TO_EN(i) {
+    planner.settings.max_acceleration_mm_per_s2[i] = tmp_max_acceleration[i];
+    planner.settings.max_feedrate_mm_s[i] = tmp_max_feedrate[i];
+  }
+
+  planner.reset_acceleration_rates();
+}
+
+/**
+ * Called after returning to home, generally used to recover setting information
+ * 
+ */
+void GcodeSuite::do_after_home(void) {
+  ftMotion.setMode((ftMotionMode_t)backup_homing.ft_mode);
+  planner.settings.acceleration = backup_homing.acceleration;
+  planner.settings.retract_acceleration = backup_homing.retract_acceleration;
+  planner.settings.travel_acceleration = backup_homing.travel_acceleration;
+
+  LOOP_X_TO_EN(i) {
+    planner.settings.max_acceleration_mm_per_s2[i] = backup_homing.max_acceleration_mm_per_s2[i];
+    planner.settings.max_feedrate_mm_s[i] = backup_homing.max_feedrate_mm_s[i];
+  }
+
+  planner.reset_acceleration_rates();
 }
 
 /**
@@ -275,7 +338,11 @@ void GcodeSuite::execute_command(void) {
         case 27: G27(); break;                                    // G27: Nozzle Park
       #endif
 
-      case 28: G28(false); break;                                 // G28: Home all axes, one at a time
+      case 28:                                                    // G28: Home all axes, one at a time
+        do_before_home();
+        G28(false); 
+        do_after_home();
+        break;                                 
 
       #if HAS_LEVELING
         case 29:                                                  // G29: Bed leveling calibration
@@ -682,6 +749,10 @@ void GcodeSuite::execute_command(void) {
 
       #if HAS_M206_COMMAND
         case 428: M428(); break;                                  // M428: Apply current_position to home_offset
+      #endif
+
+      #if ENABLED(FT_MOTION)
+        case 493: M493(); break;
       #endif
 
       case 500: M500(); break;                                    // M500: Store settings in EEPROM

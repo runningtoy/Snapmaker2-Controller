@@ -28,6 +28,7 @@
 #include "../module/toolhead_3dp.h"
 #include "../module/toolhead_cnc.h"
 #include "../module/toolhead_laser.h"
+#include "../module/toolhead_cnc_200w.h"
 
 // marlin headers
 #include "src/gcode/gcode.h"
@@ -61,6 +62,18 @@ void GcodeSuite::M1005() {
 
   linear_p->ShowAllLinearInfo();
 
+  if (kit_combination_type) {
+    LOG_I("kits:");
+
+    if (kit_combination_type & QUICK_CHANGE_ADAPTER_MSK)
+      LOG_I(" quick_change_kit");
+
+    if (kit_combination_type & REINFORCEMENT_KIT_MSK)
+      LOG_I(" reinforcement_kit");
+
+    LOG_I("\n");
+  }
+
   if (ModuleBase::toolhead() == MACHINE_TYPE_LASER || (ModuleBase::toolhead() == MACHINE_TYPE_LASER_10W)) {
     laser->ReadBluetoothVer();
   }
@@ -86,6 +99,17 @@ void GcodeSuite::M1005() {
 
 
 void GcodeSuite::M1006() {
+  if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC || ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC_200W) {
+    if (parser.seenval('L')) {
+      bool is_print_rpm_ = parser.boolval('L', false);
+      if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC)
+        cnc.set_is_print_rpm(is_print_rpm_);
+      else if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC_200W)
+        cnc_200w.set_is_print_rpm(is_print_rpm_);
+      return;
+    }
+  }
+
   SERIAL_ECHO("Tool Head: ");
 
   switch (ModuleBase::toolhead()) {
@@ -131,10 +155,23 @@ void GcodeSuite::M1006() {
     SERIAL_ECHOLNPAIR("Focus Height: ", laser->focus());
     break;
 
+  case MODULE_TOOLHEAD_LASER_RED_2W:
+    SERIAL_ECHOLN("2W RED LASER");
+    SERIAL_ECHO("Current Status: ");
+    SERIAL_ECHOLN((laser->state() == TOOLHEAD_LASER_STATE_ON)? "ON" : "OFF");
+    SERIAL_ECHOLNPAIR("Current Power: ", laser->power());
+    SERIAL_ECHOLNPAIR("Focus Height: ", laser->focus());
+    break;
+
   case MODULE_TOOLHEAD_CNC:
     SERIAL_ECHOLN("CNC");
     SERIAL_ECHOLNPAIR("Current Power: ", cnc.power());
     SERIAL_ECHOLNPAIR("RPM: ", cnc.rpm());
+    break;
+
+  case MODULE_TOOLHEAD_CNC_200W:
+    LOG_I("200W CNC\n");
+    cnc_200w.PrintInfo();
     break;
 
   default:

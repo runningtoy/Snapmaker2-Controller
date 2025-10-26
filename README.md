@@ -4,7 +4,8 @@ Snapmaker2-Controller is the firmware for Snapmaker 2.0 3-in-1 3D Printers. It's
 
 ## Changes to Main
 - [IR Sensor mod](https://www.thingiverse.com/thing:4895144)
-- Adaption for smaller glas Bed
+- ~Adaption for smaller glas Bed~
+
 
 ## Documentation
 

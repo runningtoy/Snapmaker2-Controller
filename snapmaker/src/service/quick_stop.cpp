@@ -27,6 +27,7 @@
 #include "../module/toolhead_3dp.h"
 #include "../module/toolhead_laser.h"
 #include "../module/enclosure.h"
+#include "../module/toolhead_cnc_200w.h"
 
 #include "src/module/stepper.h"
 #include "src/module/temperature.h"
@@ -51,7 +52,8 @@ void QuickStopService::Trigger(QuickStopSource new_source, bool from_isr /*=fals
   // power-loss will be check in temperature time isr
   // if we are not in working, won't handle power-loss
   if (from_isr) {
-    if (systemservice.GetCurrentStage() != SYSTAGE_WORK && systemservice.GetCurrentStage() != SYSTAGE_PAUSE)
+    if ((systemservice.GetCurrentStage() != SYSTAGE_WORK && systemservice.GetCurrentStage() != SYSTAGE_PAUSE && \
+        systemservice.GetCurrentStage() != SYSTAGE_RESUMING) || (systemservice.GetCurrentStage() == SYSTAGE_RESUMING && systemservice.recover_powerloss_flag))
       return;
   }
   else {
@@ -107,6 +109,9 @@ bool QuickStopService::CheckInISR(block_t *blk) {
   case QS_STA_TRIGGERED:
     // need sync count position from stepper to planner
     // otherwise, it may park in unexpected position
+    if (ftMotion.cfg.modeHasShaper()) {
+      stepper.ftMotionSyncCurrentBlock();
+    }
     current_position[E_AXIS] = planner.get_axis_position_mm(E_AXIS);
     set_current_from_steppers_for_axis(ALL_AXES);
 
@@ -126,23 +131,27 @@ bool QuickStopService::CheckInISR(block_t *blk) {
     * triggered by PAUSE, just save env and switch to next state
     */
     case QS_SOURCE_PAUSE:
-      if (blk) {
-        pl_recovery.SaveCmdLine(blk->filePos);
-        // pl_recovery.SaveLaserInlineState(blk->laser.status.isEnabled, blk->laser.status.trapezoid_power);
-        pl_recovery.SaveLaserPowerInfo(blk->laser);
-      }
-      else {
-        block_inline_laser_t info;
-        info.status = planner.laser_inline.status;
-        info.power = planner.laser_inline.power;
-        info.sync_power = planner.laser_inline.sync_power;
-        pl_recovery.SaveLaserPowerInfo(info);
-        // pl_recovery.SaveLaserInlineState(planner.laser_inline.status.isEnabled, planner.laser_inline.status.trapezoid_power);
-      }
+      if (source_ != QS_SOURCE_POWER_LOSS || (source_ == QS_SOURCE_POWER_LOSS && systemservice.GetCurrentStatus() == SYSTAT_WORK)) {
+        if (blk) {
+          if (!ftMotion.cfg.modeHasShaper()) {
+            pl_recovery.SaveCmdLine(blk->filePos);
+          }
+          // pl_recovery.SaveLaserInlineState(blk->laser.status.isEnabled, blk->laser.status.trapezoid_power);
+          pl_recovery.SaveLaserPowerInfo(blk->laser);
+        }
+        else {
+          block_inline_laser_t info;
+          info.status = planner.laser_inline.status;
+          info.power = planner.laser_inline.power;
+          info.sync_power = planner.laser_inline.sync_power;
+          pl_recovery.SaveLaserPowerInfo(info);
+          // pl_recovery.SaveLaserInlineState(planner.laser_inline.status.isEnabled, planner.laser_inline.status.trapezoid_power);
+        }
 
-      // if power-loss appear atfer finishing PAUSE, won't save env again
-      if (systemservice.GetCurrentStatus() != SYSTAT_PAUSE_FINISH)
-        pl_recovery.SaveEnv();
+        // if power-loss appear atfer finishing PAUSE, won't save env again
+        if (systemservice.GetCurrentStatus() != SYSTAT_PAUSE_FINISH)
+          pl_recovery.SaveEnv();
+      }
 
       // write flash only power-loss appear
       if (source_ == QS_SOURCE_POWER_LOSS) {
@@ -260,16 +269,25 @@ void QuickStopService::Park() {
 
     // move X to max position of home dir
     // move Y to max position
-    if (X_HOME_DIR > 0)
-      move_to_limited_xy(soft_endstop[X_AXIS].max, Y_MAX_POS, 60);
-    else
-      move_to_limited_xy(soft_endstop[X_AXIS].min, Y_MAX_POS, 60);
+    if (source_ == QS_SOURCE_PAUSE) {
+      if (X_HOME_DIR > 0)
+        move_to_limited_x(soft_endstop[X_AXIS].min + 5, 60);
+      else
+        move_to_limited_x(soft_endstop[X_AXIS].max - 5, 60);
+    }
+    else {
+      if (X_HOME_DIR > 0)
+        move_to_limited_xy(soft_endstop[X_AXIS].max, Y_MAX_POS, 60);
+      else
+        move_to_limited_xy(soft_endstop[X_AXIS].min, Y_MAX_POS, 60);
+    }
     break;
 
   case MODULE_TOOLHEAD_LASER:
   case MODULE_TOOLHEAD_LASER_10W:
   case MODULE_TOOLHEAD_LASER_20W:
   case MODULE_TOOLHEAD_LASER_40W:
+  case MODULE_TOOLHEAD_LASER_RED_2W:
     // In the case of laser, we don't raise Z.
     if (source_ == QS_SOURCE_STOP || laser->security_status_) {
       move_to_limited_z(Z_MAX_POS, 30);
@@ -278,20 +296,31 @@ void QuickStopService::Park() {
     break;
 
   case MODULE_TOOLHEAD_CNC:
+  case MODULE_TOOLHEAD_CNC_200W:
     if (source_ != QS_SOURCE_POWER_LOSS) {
       if (current_position[Z_AXIS] + CNC_SAFE_HIGH_DIFF < Z_MAX_POS) {
         move_to_limited_z(current_position[Z_AXIS] + CNC_SAFE_HIGH_DIFF, 30);
         while (planner.has_blocks_queued()) {
           idle();
         }
-        cnc.SetOutput(0);
+
+        if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC)
+          cnc.SetOutput(0);
+
+        if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC_200W)
+          cnc_200w.Cnc200WSpeedSetting(0);
       }
 
       move_to_limited_z(Z_MAX_POS, 30);
       while (planner.has_blocks_queued()) {
           idle();
       }
-      cnc.SetOutput(0);
+
+      if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC)
+        cnc.SetOutput(0);
+
+      if (ModuleBase::toolhead() == MODULE_TOOLHEAD_CNC_200W)
+        cnc_200w.Cnc200WSpeedSetting(0);
     }
     break;
 
@@ -323,7 +352,8 @@ void QuickStopService::TurnOffPower() {
   if ((ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER) ||
       (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W) ||
       (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W) ||
-      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W)
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W) ||
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W)
   ) {
     // The laser movement stops immediately with no risk of damaging the model
     disable_power_domain(POWER_DOMAIN_1);
@@ -335,7 +365,8 @@ void QuickStopService::HandleProtection() {
 
   if (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W ||
       ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W ||
-      ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W
+      ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W ||
+      ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W
   ) {
       // don't do nothing
   }
@@ -349,6 +380,9 @@ void QuickStopService::EmergencyStop() {
     case MACHINE_TYPE_CNC:
       cnc.TurnOff();
       break;
+    case MACHINE_TYPE_CNC_200W:
+      cnc_200w.Cnc200WSpeedSetting(0, CNC_PWM_SET_SPEED, false);
+      break;
     case MACHINE_TYPE_DUALEXTRUDER:
       printer1->SetFan(1, 0);
     case MACHINE_TYPE_3DPRINT:
@@ -359,10 +393,13 @@ void QuickStopService::EmergencyStop() {
     case MACHINE_TYPE_LASER_10W:
     case MACHINE_TYPE_LASER_20W:
     case MACHINE_TYPE_LASER_40W:
+    case MACHINE_TYPE_LASER_RED_2W:
       laser->SetCameraLight(0);
       laser->SetFanPower(0);
       break;
     case MACHINE_TYPE_UNDEFINE:
+      break;
+    default :
       break;
   }
   enclosure.SetFanSpeed(0);

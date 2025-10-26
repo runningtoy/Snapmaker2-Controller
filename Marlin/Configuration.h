@@ -632,9 +632,9 @@
  *          TMC5160, TMC5160_STANDALONE
  * :['A4988', 'A5984', 'DRV8825', 'LV8729', 'L6470', 'TB6560', 'TB6600', 'TMC2100', 'TMC2130', 'TMC2130_STANDALONE', 'TMC2160', 'TMC2160_STANDALONE', 'TMC2208', 'TMC2208_STANDALONE', 'TMC26X', 'TMC26X_STANDALONE', 'TMC2660', 'TMC2660_STANDALONE', 'TMC5130', 'TMC5130_STANDALONE', 'TMC5160', 'TMC5160_STANDALONE']
  */
-//#define X_DRIVER_TYPE  A4988
-//#define Y_DRIVER_TYPE  A4988
-//#define Z_DRIVER_TYPE  A4988
+#define X_DRIVER_TYPE  A4988
+#define Y_DRIVER_TYPE  A4988
+#define Z_DRIVER_TYPE  A4988
 //#define X2_DRIVER_TYPE A4988
 //#define Y2_DRIVER_TYPE A4988
 //#define Z2_DRIVER_TYPE A4988
@@ -702,7 +702,12 @@
  * Override with M203
  *                                      X, Y, Z, B, E0 [, E1[, E2[, E3[, E4[, E5]]]]]
  */
-#define DEFAULT_MAX_FEEDRATE          { 120, 120, 40, 45, 25 }
+#define DEFAULT_MAX_FEEDRATE            { 120, 120, 40, 45, 40 }
+#define DEFAULT_3DP_MAX_FEEDRATE        { 120, 120, 40, 45, 40 }
+#define DEFAULT_3DP_FT_MAX_FEEDRATE_L8  { 120, 120, 40, 45, 40 }
+#define DEFAULT_3DP_FT_MAX_FEEDRATE_L20 { 120, 120, 40, 45, 40 }
+#define DEFAULT_LASER_MAX_FEEDRATE      { 120, 120, 40, 45, 40 }
+#define DEFAULT_CNC_MAX_FEEDRATE        { 120, 120, 40, 45, 40 }
 
 /**
  * Default Max Acceleration (change/s) change = mm/s
@@ -710,7 +715,12 @@
  * Override with M201
  *                                      X, Y, Z, B, E0 [, E1[, E2[, E3[, E4[, E5]]]]]
  */
-#define DEFAULT_MAX_ACCELERATION      { 3000, 3000, 100, 3000, 10000 }
+#define DEFAULT_MAX_ACCELERATION            { 3000, 3000, 100, 3000, 10000 }
+#define DEFAULT_3DP_MAX_ACCELERATION        { 3000, 3000, 100, 3000, 10000 }
+#define DEFAULT_3DP_FT_MAX_ACCELERATION_L8  { 3500, 3500, 100, 3000, 10000 }
+#define DEFAULT_3DP_FT_MAX_ACCELERATION_L20 { 4500, 4500, 100, 3000, 10000 }
+#define DEFAULT_LASER_MAX_ACCELERATION      { 3000, 3000, 100, 3000, 10000 }
+#define DEFAULT_CNC_MAX_ACCELERATION        { 3000, 3000, 100, 3000, 10000 }
 
 /**
  * Default Acceleration (change/s) change = mm/s
@@ -720,9 +730,24 @@
  *   M204 R    Retract Acceleration
  *   M204 T    Travel Acceleration
  */
-#define DEFAULT_ACCELERATION          1000    // X, Y, Z and E acceleration for printing moves
-#define DEFAULT_RETRACT_ACCELERATION  1000    // E acceleration for retracts
-#define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration for travel (non printing) moves
+#define DEFAULT_ACCELERATION                    1000    // X, Y, Z and E acceleration for printing moves
+#define DEFAULT_3DP_ACCELERATION                1000
+#define DEFAULT_3DP_FT_ACCELERATION_L8          2000
+#define DEFAULT_3DP_FT_ACCELERATION_L20         3000
+#define DEFAULT_LASER_ACCELERATION              1000
+#define DEFAULT_CNC_ACCELERATION                1000
+#define DEFAULT_RETRACT_ACCELERATION            1000    // E acceleration for retracts
+#define DEFAULT_3DP_RETRACT_ACCELERATION        1000
+#define DEFAULT_3DP_FT_RETRACT_ACCELERATION_L8  2000
+#define DEFAULT_3DP_FT_RETRACT_ACCELERATION_L20 3000
+#define DEFAULT_LASER_RETRACT_ACCELERATION      1000
+#define DEFAULT_CNC_RETRACT_ACCELERATION        1000
+#define DEFAULT_TRAVEL_ACCELERATION             1000    // X, Y, Z acceleration for travel (non printing) moves
+#define DEFAULT_3DP_TRAVEL_ACCELERATION         1000
+#define DEFAULT_3DP_FT_TRAVEL_ACCELERATION_L8   2000
+#define DEFAULT_3DP_FT_TRAVEL_ACCELERATION_L20  3000
+#define DEFAULT_LASER_TRAVEL_ACCELERATION       1000
+#define DEFAULT_CNC_TRAVEL_ACCELERATION         1000
 
 //
 // Use Junction Deviation instead of traditional Jerk Limiting
@@ -871,14 +896,9 @@
  *      O-- FRONT --+
  *    (0,0)
  */
-// #define X_PROBE_OFFSET_FROM_EXTRUDER 13     // X offset: -left  +right  [of the nozzle]
-// #define Y_PROBE_OFFSET_FROM_EXTRUDER 19.15  // Y offset: -front +behind [the nozzle]
-// #define Z_PROBE_OFFSET_FROM_EXTRUDER 0      // Z offset: -below +above  [the nozzle]
-
-#define X_PROBE_OFFSET_FROM_EXTRUDER 13.5 // X offset: -left  +right  [of the nozzle]
-#define Y_PROBE_OFFSET_FROM_EXTRUDER 0 // Y offset: -front +behind [the nozzle]
-#define Z_PROBE_OFFSET_FROM_EXTRUDER 0 // Z offset: -below +above  [the nozzle]
-
+#define X_PROBE_OFFSET_FROM_EXTRUDER 13     // X offset: -left  +right  [of the nozzle]
+#define Y_PROBE_OFFSET_FROM_EXTRUDER 19.15  // Y offset: -front +behind [the nozzle]
+#define Z_PROBE_OFFSET_FROM_EXTRUDER 0      // Z offset: -below +above  [the nozzle]
 #define DUALEXTRUDER_X_PROBE_OFFSET_FROM_EXTRUDER 13.7
 #define DUALEXTRUDER_Y_PROBE_OFFSET_FROM_EXTRUDER 26.1
 #define DUALEXTRUDER_Z_PROBE_OFFSET_FROM_EXTRUDER 0
@@ -1071,7 +1091,7 @@ extern uint8_t E_ENABLE_ON;
   extern float l_home_offset_laser[XN];
 
   extern bool integration_toolhead;
-  extern bool quick_change_adapter;
+  extern uint8_t kit_combination_type;
 
   extern float print_min_planner_speed;
   extern float laser_min_planner_speed;
@@ -1084,6 +1104,28 @@ extern uint8_t E_ENABLE_ON;
 #define L_HOME_OFFSET_DEFAULT {-19, -4, 0, 0}
 #define L_HOME_OFFSET_3DP2E_DEFAULT {-32, -23, 0, 0}
 #define L_HOME_OFFSET_LASER_DEFAULT {-19, -10, 0, 0}  // to fit camera capture
+
+// Definition of Extended Components
+#define QUICK_CHANGE_ADAPTER_POS                      (0)
+#define QUICK_CHANGE_ADAPTER_MSK                      (0x1 << QUICK_CHANGE_ADAPTER_POS)
+#define QUICK_CHANGE_ADAPTER                          QUICK_CHANGE_ADAPTER_MSK
+#define REINFORCEMENT_KIT_POS                         (1)
+#define REINFORCEMENT_KIT_MSK                         (0x1 << REINFORCEMENT_KIT_POS)
+#define REINFORCEMENT_KIT                             REINFORCEMENT_KIT_MSK
+#define INTEGRATION_TOOLHEAD_POS                      (2)
+#define INTEGRATION_TOOLHEAD_MSK                      (0x1 << INTEGRATION_TOOLHEAD_POS)
+#define INTEGRATION_TOOLHEAD                          INTEGRATION_TOOLHEAD_MSK
+
+#define ALLOW_HMI_SETTING_KIT_COMBINATION_MSK         (QUICK_CHANGE_ADAPTER | REINFORCEMENT_KIT)
+#define DEFAULT_KIT_COMBINATION_TYPE                  (0)
+
+#define INSTALL_QUICK_CHANGE_ADAPTER_LENGTH_CHANGE_X  (0)
+#define INSTALL_QUICK_CHANGE_ADAPTER_LENGTH_CHANGE_Y  (-15)
+#define INSTALL_QUICK_CHANGE_ADAPTER_LENGTH_CHANGE_Z  (-15)
+#define REINFORCEMENT_KIT_LENGTH_CHANGE_X             (0)
+#define REINFORCEMENT_KIT_LENGTH_CHANGE_Y             (-12)
+#define REINFORCEMENT_KIT_LENGTH_CHANGE_Z             (-6)
+
 #endif //DISABLE(SW_MACHINE_SIZE)
 
 // The size of the print bed
@@ -1244,7 +1286,7 @@ extern uint8_t E_ENABLE_ON;
   #define GRID_MAX_POINTS GRID_MAX_NUM * GRID_MAX_NUM
 //  #define PROBE_MARGIN 30
 #define DEFAUT_LEVELING_HEIGHT  9 // uint: mm
-#define DEFAUT_LEVELING_HEIGHT_3DP2E  50 // uint: mm
+#define DEFAUT_LEVELING_HEIGHT_3DP2E  75 // uint: mm
 
   // Set the boundaries for probing (where the probe can reach).
   #define LEFT_PROBE_BED_POSITION 30

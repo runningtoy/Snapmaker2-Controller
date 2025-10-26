@@ -24,6 +24,7 @@
 #include "../module/toolhead_cnc.h"
 #include "../module/toolhead_laser.h"
 #include "../common/debug.h"
+#include "../module/toolhead_cnc_200w.h"
 
 // marlin headers
 #include  "src/gcode/gcode.h"
@@ -117,6 +118,28 @@ void GcodeSuite::M3_M4(const bool is_M4) {
     else
       cnc.TurnOn();
   }
+  else if (cnc_200w.IsOnline()) {
+    uint16_t tmp_value = 0;
+    if (parser.seenval('P')) {
+      tmp_value = parser.value_ushort();
+      // when the motor is not rotating only the target power is set without switching on the motor
+      if (parser.seen('C'))
+        cnc_200w.Cnc200WTargetSpeedConfigure(tmp_value);
+      else
+        cnc_200w.Cnc200WSpeedSetting(tmp_value);
+    }
+    else if (parser.seenval('S')) {
+      tmp_value = parser.value_ushort();
+      // when the motor is not rotating only the target power is set without switching on the motor
+      if (parser.seen('C'))
+        cnc_200w.Cnc200WTargetSpeedConfigure(tmp_value, CNC_RPM_SET_SPEED);
+      else
+        cnc_200w.Cnc200WSpeedSetting(tmp_value, CNC_RPM_SET_SPEED);
+    }
+    else {
+      cnc_200w.Cnc200WSpeedSetting(cnc_200w.power());
+    }
+  }
 }
 
 /**
@@ -133,6 +156,9 @@ void GcodeSuite::M5() {
   }
   else if(cnc.IsOnline()) {
     cnc.TurnOff();
+  }
+  else if (cnc_200w.IsOnline()) {
+    cnc_200w.Cnc200WSpeedSetting(0, CNC_PWM_SET_SPEED, 0);
   }
 }
 

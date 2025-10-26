@@ -24,6 +24,7 @@
 #include "../common/debug.h"
 #include "../module/toolhead_laser.h"
 #include "../service/system.h"
+#include "src/module/configuration_store.h"
 
 Enclosure enclosure;
 
@@ -135,7 +136,7 @@ ErrCode Enclosure::SetFanSpeed(uint8_t speed) {
 void Enclosure::ReportStatus() {
   if (IsOnline()) {
     SERIAL_ECHOLN("Enclosure online: On");
-    SERIAL_ECHO("Enclosure: ");
+    SERIAL_ECHO("Enclosure door checking: ");
     SERIAL_ECHOLN((enabled_)? "On" : "Off");
     SERIAL_ECHO("Enclosure door: ");
     SERIAL_ECHOLN((door_state_ == ENCLOSURE_DOOR_STATE_OPEN)? "Open" : "Closed");
@@ -163,21 +164,16 @@ void Enclosure::PollDoorState() {
 void Enclosure::Disable() {
   LOG_I("disable door checking!\n");
   enabled_ = false;
-  if (event_state_ == ENCLOSURE_EVENT_STATE_HANDLED_OPEN &&
-      event_state_ == ENCLOSURE_EVENT_STATE_OPENED) {
-    HandleDoorClosed();
-    event_state_ = ENCLOSURE_EVENT_STATE_IDLE;
-  }
+  HandleDoorClosed();
+  settings.save();
 }
 
 
 void Enclosure::Enable() {
   LOG_I("enable door checking!\n");
   enabled_ = true;
-  if (door_state_ == ENCLOSURE_DOOR_STATE_OPEN &&
-      event_state_ == ENCLOSURE_EVENT_STATE_IDLE) {
-    HandleDoorOpened();
-  }
+  HandleDoorOpened();
+  settings.save();
 }
 
 
@@ -185,7 +181,8 @@ void Enclosure::HandleDoorOpened() {
   LOG_I("door opened!\n");
   systemservice.PauseTrigger(TRIGGER_SOURCE_DOOR_OPEN);
   if (laser->IsOnline()) {
-    if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead())
+    if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead() ||
+        MODULE_TOOLHEAD_LASER_RED_2W == ModuleBase::toolhead())
       laser->SetPowerLimit(TOOLHEAD_LASER_20W_40W_POWER_SAFE_LIMIT);
     else
       laser->SetPowerLimit(TOOLHEAD_LASER_POWER_SAFE_LIMIT);

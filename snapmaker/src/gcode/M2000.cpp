@@ -52,6 +52,10 @@ void GcodeSuite::M2000() {
   uint8_t l = (uint8_t)parser.byteval('L', (uint8_t)0XFF);
   uint8_t s = (uint8_t)parser.byteval('S', (uint8_t)0);
 
+  // common info for float
+  __unused float g = parser.floatval('G', 0);
+  __unused float h = parser.floatval('H', 0);
+
   switch (s) {
   case 0:
     SNAP_DEBUG_SHOW_INFO();
@@ -105,22 +109,27 @@ void GcodeSuite::M2000() {
     {
       if (parser.seenval('I')) {
         if (systemservice.GetCurrentStatus() == SYSTAT_IDLE && linear_p->machine_size() != MACHINE_SIZE_UNKNOWN) {
-          bool new_s = parser.boolval('I', quick_change_adapter);
-          if (new_s != quick_change_adapter) {
-            quick_change_adapter = new_s;
-            process_cmd_imd("G53");
-            linear.UpdateMachinePosition();
-            set_all_unhomed();
+          uint8_t new_s = parser.byteval('I', kit_combination_type);
+          if (new_s <= (QUICK_CHANGE_ADAPTER | REINFORCEMENT_KIT)) {
+            if (new_s != kit_combination_type) {
+              kit_combination_type = new_s;
+              process_cmd_imd("G53");
+              linear.UpdateMachinePosition();
+              set_all_unhomed();
+            }
+            LOG_I("set adapter state: %d, integration toolhead: %d\n", kit_combination_type, integration_toolhead);
           }
-          LOG_I("set adapter state: %d, integration toolhead: %d\n", quick_change_adapter, integration_toolhead);
+          else {
+            LOG_I("set adapter state fail, unknown kit combinations: %d\n", new_s);
+          }
         }
         else {
-          LOG_I("set adapter state fail, sys_sta: %d, machine_size: %d, quick_change_adapter: %d, integration_toolhead: %d\n", \
-              systemservice.GetCurrentStatus(), linear_p->machine_size(), quick_change_adapter, integration_toolhead);
+          LOG_I("set adapter state fail, sys_sta: %d, machine_size: %d, kit_combination_type: %d, integration_toolhead: %d\n", \
+              systemservice.GetCurrentStatus(), linear_p->machine_size(), kit_combination_type, integration_toolhead);
         }
       }
       else {
-        LOG_I("adapter state: %d, integration toolhead: %d\n", quick_change_adapter, integration_toolhead);
+        LOG_I("adapter state: %d, integration toolhead: %d\n", kit_combination_type, integration_toolhead);
       }
     }
     break;
@@ -137,8 +146,62 @@ void GcodeSuite::M2000() {
       }
     break;
 
+    case 24:
+      if (laser) {
+        if (parser.seenval('P')) {
+          uint16_t floor = parser.byteval('P', 0);
+          laser->set_inline_pwm_power_floor(floor);
+        }
+      }
+      break;
+
+    case 26: {
+      int8_t protect_upper = (int8_t)(g + 0.001);
+      int8_t recovery_upper = (int8_t)(h + 0.001);
+      int8_t protect_lower = 0xFF;
+      int8_t recovery_lower = 0xFF;
+      
+      if (E_SUCCESS != laser->set_get_protect_temp(protect_upper, recovery_upper, protect_lower, recovery_lower)) {
+        LOG_E("err\n");
+      }
+      else {
+        LOG_I("now, protect_upper = %d, recovery_upper = %d, protect_lower = %d, recovery_lower = %d\r\n", 
+          protect_upper, recovery_upper, protect_lower, recovery_lower);
+      }
+    }
+    break;
+
+    case 27: {
+      int8_t protect_upper = 0xFF; 
+      int8_t recovery_upper = 0xFF; 
+      int8_t protect_lower = (int8_t)(g + 0.001);
+      int8_t recovery_lower = (int8_t)(h + 0.001);
+      
+      if (E_SUCCESS != laser->set_get_protect_temp(protect_upper, recovery_upper, protect_lower, recovery_lower)) {
+        LOG_E("err\n");
+      }
+      else {
+        LOG_I("now, protect_upper = %d, recovery_upper = %d, protect_lower = %d, recovery_lower = %d\r\n", 
+          protect_upper, recovery_upper, protect_lower, recovery_lower);
+      }
+    }
+    break;
+
+    case 30:
+      if (laser->IsOnline()) {
+        if (parser.seenval('P')) {
+          uint8_t standby = parser.byteval('P', 0);
+          LOG_I("Set standby mode %s\n", standby ? "true" : "false");
+          if (E_SUCCESS != laser->set_module_standby_mode(!!standby)) {
+            LOG_E("err\n");
+          }
+        }
+      }
+      break;
+
     default:
     break;
   }
 
 }
+

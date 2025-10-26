@@ -86,7 +86,7 @@ ErrCode CanHost::Init() {
 
   for (i = 0; i < CAN_STD_WAIT_QUEUE_MAX; i++) {
     std_wait_q_[i].message = MODULE_MESSAGE_ID_INVALID;
-    std_wait_q_[i].queue  = xMessageBufferCreate(CAN_STD_CMD_ELEMENT_SIZE);
+    std_wait_q_[i].queue  = xMessageBufferCreate(CAN_STD_CMD_ELEMENT_SIZE * 4);
     configASSERT(std_wait_q_[i].queue);
   }
   std_wait_lock_ = xSemaphoreCreateMutex();
@@ -218,7 +218,12 @@ ErrCode CanHost::SendStdCmdSync(CanStdFuncCmd_t &cmd, uint32_t timeout_ms, uint8
       break;
     }
   }
+  
   xSemaphoreGive(std_wait_lock_);
+
+  if (i == CAN_STD_WAIT_QUEUE_MAX) {
+    return E_NO_RESRC;
+  }
 
   ret = SendStdCmd(cmd, sub_index);
   if (ret != E_SUCCESS) {
@@ -239,6 +244,7 @@ out:
   xSemaphoreTake(std_wait_lock_, 0);
 
   std_wait_q_[i].message = MODULE_MESSAGE_ID_INVALID;
+  xMessageBufferReset(std_wait_q_[i].queue);
 
   xSemaphoreGive(std_wait_lock_);
 
@@ -470,7 +476,7 @@ void CanHost::EventHandler(void *parameter) {
   linear_p->UpdateMachineSize();
 
   if (linear_p->machine_size() == MACHINE_SIZE_A150) {
-    quick_change_adapter = false;
+    kit_combination_type = DEFAULT_KIT_COMBINATION_TYPE;
   }
 
   for (int i = 0; static_modules[i] != NULL; i++) {

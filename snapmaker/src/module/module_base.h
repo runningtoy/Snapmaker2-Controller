@@ -95,9 +95,11 @@ enum ModuleDeviceID {
   MODULE_DEVICE_ID_LINEAR_TMC,       // 12
   MODULE_DEVICE_ID_DUAL_EXTRUDER,    // 13
   MODULE_DEVICE_ID_10W_LASER,        // 14
+  MODULE_DEVICE_ID_200W_CNC,         // 15
 
   MODULE_DEVICE_ID_20W_LASER = 19,   // 19
   MODULE_DEVICE_ID_40W_LASER = 20,   // 20
+  MODULE_DEVICE_ID_LASER_RED_2W_2023    = 23,
 
   MODULE_DEVICE_ID_INVALID
 };
@@ -188,6 +190,14 @@ enum ModuleFunctionID {
   MODULE_FUNC_SET_CROSSLIGHT_OFFSET             ,  // 66
   MODULE_FUNC_GET_CROSSLIGHT_OFFSET             ,  // 67
   MODULE_FUNC_LASER_BRANCH_CTRL                 ,  // 68
+  MODULE_FUNC_SET_RIGHT_LEVEL_MODE              ,  // 69
+  MODULE_FUNC_REPORT_RIGHT_LEVEL_MODE_INFO      ,  // 70
+  MODULE_FUNC_GET_LASER_WEAK_POWER              ,  // 71
+  MODULE_FUNC_SET_LASER_WEAK_POWER              ,  // 72
+  MODULE_FUNC_SET_GET_PROTECT_TEMP              ,  // 73 
+  MODULE_FUNC_GET_IMPORTANT_INFO_1_FOR_DBG      ,  // 74
+  MODULE_FUNC_GET_IMPORTANT_INFO_2_FOR_DBG      ,  // 75
+  MODULE_FUNC_SET_STANDBY                       ,  // 76
 
   MODULE_FUNC_MAX
 };
@@ -272,9 +282,16 @@ const uint8_t module_prio_table[][2] = {
   {/* MODULE_FUNC_REPORT_FIRE_SENSOR_RAWDATA        */  MODULE_FUNC_PRIORITY_LOW, 1},
   {/* MODULE_FUNC_SET_CROSSLIGHT_OFFSET             */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
   {/* MODULE_FUNC_GET_CROSSLIGHT_OFFSET             */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
-  {/* MODULE_FUNC_LASER_BRANCH_CTRL             */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_LASER_BRANCH_CTRL                 */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_SET_RIGHT_LEVEL_MODE              */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_REPORT_RIGHT_LEVEL_MODE_INFO      */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_GET_LASER_WEAK_POWER              */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_SET_LASER_WEAK_POWER              */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_SET_GET_PROTECT_TEMP */               MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_GET_IMPORTANT_INFO_1_FOR_DBG */       MODULE_FUNC_PRIORITY_MEDIUM, 1},
+  {/* MODULE_FUNC_GET_IMPORTANT_INFO_2_FOR_DBG */       MODULE_FUNC_PRIORITY_LOW, 0},
+  {/* MODULE_FUNC_SET_STANDBY                       */  MODULE_FUNC_PRIORITY_MEDIUM, 1},
 };
-
 
 #define MODULE_EXT_CMD_INDEX_ID   (0)
 #define MODULE_EXT_CMD_INDEX_DATA (1)
@@ -320,6 +337,7 @@ enum ModuleExtendCommand {
 };
 
 
+/* Note: The order cannot be changed and can only be added later */
 enum ModuleToolHeadType {
   MODULE_TOOLHEAD_UNKNOW,
 
@@ -330,7 +348,16 @@ enum ModuleToolHeadType {
   MODULE_TOOLHEAD_DUALEXTRUDER,
   MODULE_TOOLHEAD_LASER_20W,
   MODULE_TOOLHEAD_LASER_40W,
+  MODULE_TOOLHEAD_CNC_200W,
+  MODULE_TOOLHEAD_LASER_RED_2W,
 };
+
+
+typedef uint8_t module_toolhead_kind_t;
+#define MODULE_TOOLHEAD_KIND_FDM      (0x01)
+#define MODULE_TOOLHEAD_KIND_LASER    (0x02)
+#define MODULE_TOOLHEAD_KIND_CNC      (0x04)
+#define MODULE_TOOLHEAD_KIND_INVALID  (0x80)
 
 enum LockMarlinUartSource {
   LOCK_SOURCE_NONE,
@@ -346,6 +373,7 @@ class ModuleBase {
     static ErrCode InitModule8p(MAC_t &mac, int dir_pin, uint8_t index);
 
     static ModuleToolHeadType toolhead() { return toolhead_; }
+    static bool IsKindOfToolhead(module_toolhead_kind_t kind_bits);
 
     static bool lock_marlin_uart() { return lock_marlin_uart_; };
     static LockMarlinUartSource lock_marlin_source() { return lock_marlin_source_; };

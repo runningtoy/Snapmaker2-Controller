@@ -1695,7 +1695,7 @@ void homeaxis(const AxisEnum axis) {
    */
   void UpdateMachineDefines()
   {
-    // TODO: update the following variable information by quick_change_adapter & integration_toolhead
+    // TODO: update the following variable information by kit_combination_type & integration_toolhead
     base_min_pos_P[X_AXIS] = X_MIN_POS;
     base_min_pos_P[Y_AXIS] = Y_MIN_POS;
     base_min_pos_P[Z_AXIS] = Z_MIN_POS;
@@ -1723,6 +1723,14 @@ void homeaxis(const AxisEnum axis) {
     soft_endstop[X_AXIS].max = X_MAX_POS;
     soft_endstop[Y_AXIS].max = Y_MAX_POS;
     soft_endstop[Z_AXIS].max = Z_MAX_POS;
+
+    // Special treatment in order not to change the previous coordinate system,
+    // the length of the increase can not be greater than the go home back distance
+    // The current firmware go home back distance is 3
+    if (kit_combination_type & REINFORCEMENT_KIT_MSK) {
+      if (home_dir_P[Z_AXIS] > 0)
+        soft_endstop[Z_AXIS].max += 2;
+    }
     z_home_position = Z_MAX_POS;
     #endif
     max_length_P[X_AXIS] = X_MAX_POS - X_MIN_POS;
@@ -1733,8 +1741,6 @@ void homeaxis(const AxisEnum axis) {
       SERIAL_ECHOLN("grid manual");
       bilinear_grid_manual();
     #endif
-    do_blocking_move_to(current_position[X_AXIS] +0.05f, current_position[Y_AXIS] +0.05f, current_position[Z_AXIS] +0.05f, 16);
-    do_blocking_move_to(current_position[X_AXIS] -0.05f, current_position[Y_AXIS] -0.05f, current_position[Z_AXIS] -0.05f, 16);
   }
 #endif // ENABLED(SW_MACHINE_SIZE)
 

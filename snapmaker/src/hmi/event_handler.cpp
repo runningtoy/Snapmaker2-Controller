@@ -786,25 +786,39 @@ static ErrCode HmiSetWeakLightOriginWork(SSTP_Event_t &event) {
   return laser->SetWeakLightOriginWork(event);
 }
 
+static ErrCode HmiGetWeakLightPower(SSTP_Event_t &event) {
+  return laser->GetWeakLightPower(event);
+}
+
+static ErrCode HmiSetWeakLightPower(SSTP_Event_t &event) {
+  return laser->SetWeakLightPower(event);
+}
+
 static ErrCode HmiRequestGetMachineKitInfo(SSTP_Event_t &event) {
   uint8_t buf_info[10];
+  uint8_t kit_combination_type_tmp = 0;
   uint16_t data_len = 0;
   SSTP_Event_t event_hmi = {EID_SETTING_ACK, SETTINGS_OPC_GET_MACHINE_KIT_INFO};
 
+  if (kit_combination_type & QUICK_CHANGE_ADAPTER_MSK)  kit_combination_type_tmp |= QUICK_CHANGE_ADAPTER;
+  if (kit_combination_type & REINFORCEMENT_KIT_MSK)     kit_combination_type_tmp |= REINFORCEMENT_KIT;
+  if (integration_toolhead)                             kit_combination_type_tmp |= INTEGRATION_TOOLHEAD;
+
   buf_info[data_len++] = E_SUCCESS;
-  buf_info[data_len++] = quick_change_adapter;
-  buf_info[data_len++] = integration_toolhead;
+  buf_info[data_len++] = (kit_combination_type_tmp & QUICK_CHANGE_ADAPTER);
+  buf_info[data_len++] = kit_combination_type_tmp;
   event_hmi.data   = buf_info;
   event_hmi.length = data_len;
 
-  LOG_I("hmi get kit status, quick_change_adapter: %d, integration_toolhead: %d\n", quick_change_adapter, integration_toolhead);
+  LOG_I("hmi get kit status, kit_combination_type: %d, integration_toolhead: %d\n", kit_combination_type, integration_toolhead);
 
   return hmi.Send(event_hmi);
 }
 
 static ErrCode HmiRequestSetMachineKitInfo(SSTP_Event_t &event) {
-  uint8_t quick_kit = 0;
+  uint8_t kit_combination_type_tmp = 0;
   ErrCode err = E_SUCCESS;
+  uint8_t interface_version = 0;
   SSTP_Event_t event_hmi = {EID_SETTING_ACK, SETTINGS_OPC_SET_MACHINE_KIT_INFO};
 
   if (event.length < 1) {
@@ -813,15 +827,20 @@ static ErrCode HmiRequestSetMachineKitInfo(SSTP_Event_t &event) {
     goto END;
   }
 
-  quick_kit = event.data[0];
-  LOG_I("hmi request set machine kit: %d\n", quick_kit);
+  if (event.length == 2)
+    interface_version = 1;
 
-  // only these two types are currently supported,
-  if (quick_kit != 0 && quick_kit != 1) {
-    LOG_E("set machine kit: param error!!!\n");
-    err = E_PARAM;
-    goto END;
+  if (interface_version == 0) {
+    kit_combination_type_tmp = !!event.data[0];
+    LOG_I("hmi request set machine kit: %d, interface_version: %d\n", event.data[0], interface_version);
   }
+  else {
+    kit_combination_type_tmp = event.data[1];
+    kit_combination_type_tmp &= ALLOW_HMI_SETTING_KIT_COMBINATION_MSK;
+    LOG_I("hmi request set machine kit: %d, interface_version: %d\n", event.data[1], interface_version);
+  }
+
+  if (integration_toolhead) kit_combination_type_tmp |= INTEGRATION_TOOLHEAD;
 
   if (systemservice.GetCurrentStatus() != SYSTAT_IDLE) {
     LOG_E("set machine kit: system_sta: %d, current system state does not allow setting!!!\n", systemservice.GetCurrentStatus());
@@ -835,8 +854,9 @@ static ErrCode HmiRequestSetMachineKitInfo(SSTP_Event_t &event) {
     goto END;
   }
 
-  if (quick_kit != quick_change_adapter) {
-    quick_change_adapter = !!quick_kit;
+  if (kit_combination_type_tmp != kit_combination_type) {
+    LOG_I("kit_combination_type:  %d --> %d\n", kit_combination_type, kit_combination_type_tmp);
+    kit_combination_type = kit_combination_type_tmp;
     settings.save();
   }
 
@@ -904,6 +924,8 @@ EventCallback_t settings_event_cb[SETTINGS_OPC_MAX] = {
   /* [SETTINGS_OPC_SET_CROSSLIGHT_OFFSET]                   =  */{EVENT_ATTR_DEFAULT,    HmiSetCrosslightOffset},
   /* [SETTINGS_OPC_GET_CROSSLIGHT_OFFSET]                   =  */{EVENT_ATTR_DEFAULT,    HmiGetCrosslightOffset},
   /* [SETTINGS_OPC_SET_WEAK_LIGHT_ORIGIN_MODE]              =  */{EVENT_ATTR_DEFAULT,    HmiSetWeakLightOriginWork},
+  /* [SETTINGS_OPC_GET_WEAK_POWER]                          =  */{EVENT_ATTR_DEFAULT,    HmiGetWeakLightPower},
+  /* [SETTINGS_OPC_SET_WEAK_POWER]                          =  */{EVENT_ATTR_DEFAULT,    HmiSetWeakLightPower},
 };
 
 
@@ -1028,6 +1050,8 @@ static ErrCode DoEInfinityMove(SSTP_Event_t &event) {
   PDU_TO_LOCAL_WORD(speed, event.data + 1);
   speed = speed / 1000;
 
+  LOG_I("HMI req Infinity E Move\r\n");
+
   if (event.data[0] == 0) {
     current_position[E_AXIS] += 100000;
     line_to_current_position(speed);
@@ -1046,17 +1070,22 @@ EXIT:
 
 static ErrCode StopEMoves(SSTP_Event_t &event) {
   ErrCode err = E_SUCCESS;
+  uint32_t time_elaspe = millis() + 300;
+
   stepper.e_moves_quick_stop_triggered();
 
-  uint32_t time_elaspe = millis();
-
-  while ((stepper.get_abort_e_moves_state() == false) || (time_elaspe + 1000 > millis()));
+  // waiting for 300ms even if e move state become false
+  while ((stepper.get_abort_e_moves_state() == true) || (PENDING(millis(), time_elaspe))) {
+    idle();
+  }
 
   // Get E where the steppers were interrupted
   current_position[E_AXIS] = planner.get_axis_position_mm(E_AXIS);
 
   // Tell the planner where we actually are
   sync_plan_position();
+
+  LOG_I("Done\r\n");
 
   event.data   = &err;
   event.length = 1;

@@ -27,6 +27,7 @@
 #include "../module/toolhead_3dp.h"
 #include "../module/toolhead_cnc.h"
 #include "../module/toolhead_laser.h"
+#include "../module/toolhead_cnc_200w.h"
 
 #include "power_loss_recovery.h"
 #include "quick_stop.h"
@@ -94,7 +95,7 @@ void PowerLossRecovery::Init(void) {
 				settings.save();
 			}
 
-			SERIAL_ECHOLN("PL: Got available data!");
+			LOG_I("PL: Got available data!\n");
 		}
 		else {
 			MaskPowerPanicData();
@@ -102,12 +103,12 @@ void PowerLossRecovery::Init(void) {
     break;
   case 1:
     // data read from flash is invalid
-    SERIAL_ECHOLNPGM("PL: Unavailable data!");
+    LOG_I("PL: Unavailable data!\n");
     break;
 
   default:
     // do nothing for other results such as 2 = no power panic data
-    SERIAL_ECHOLNPGM("PL: No data!");
+    LOG_I("PL: No data!\n");
     break;
   }
 }
@@ -273,6 +274,9 @@ void PowerLossRecovery::WriteFlash(void)
 	uint8_t *pBuff;
 
   pBuff = (uint8_t *)&cur_data_;
+	cur_data_.CheckSum = 0;
+	for(uint32_t i = 0; i < (int)sizeof(PowerLossRecoveryData_t); i++)
+		cur_data_.CheckSum += pBuff[i];
 
 	//写一半标识
 	addr = RECORD_START_ADDR(WriteIndex);
@@ -370,7 +374,7 @@ int PowerLossRecovery::SaveEnv(void) {
 	}
 
   cur_data_.accumulator = print_job_timer.duration();
-	cur_data_.adapter = quick_change_adapter;
+	cur_data_.adapter = kit_combination_type;
 
   // if power loss, we have record the position to cur_data_.PositionData[]
   // NOTE that we save native position for XYZ
@@ -381,10 +385,15 @@ int PowerLossRecovery::SaveEnv(void) {
 		cur_data_.cnc_power = cnc.power();
 		break;
 
+	case MODULE_TOOLHEAD_CNC_200W:
+		cur_data_.cnc_power = cnc_200w.power();
+		break;
+
 	case MODULE_TOOLHEAD_LASER:
 	case MODULE_TOOLHEAD_LASER_10W:
-  case MODULE_TOOLHEAD_LASER_20W:
-  case MODULE_TOOLHEAD_LASER_40W:
+	case MODULE_TOOLHEAD_LASER_20W:
+	case MODULE_TOOLHEAD_LASER_40W:
+	case MODULE_TOOLHEAD_LASER_RED_2W:
 		cur_data_.laser_percent = laser->power();
 		cur_data_.laser_pwm = laser->tim_pwm();
 		cur_data_.air_pump_switch = laser->GetAirPumpSwitch();
@@ -536,13 +545,19 @@ void PowerLossRecovery::ResumeCNC() {
 	// for CNC recover form power-loss, we need to raise Z firstly.
 	// because the drill bit maybe is in the workpiece
 	// and we need to keep CNC motor running when raising Z
-	cnc.SetOutput(pre_data_.cnc_power);
+	if (cnc_200w.IsOnline())
+		cnc_200w.Cnc200WSpeedSetting(pre_data_.cnc_power);
+	else
+		cnc.SetOutput(pre_data_.cnc_power);
 
 	relative_mode = true;
 	process_cmd_imd("G28 Z");
 	relative_mode = false;
 
-	cnc.SetOutput(0);
+	if (cnc_200w.IsOnline())
+		cnc_200w.Cnc200WSpeedSetting(0);
+	else
+		cnc.SetOutput(0);
 
 	// homing and restore workspace
 	RestoreWorkspace();
@@ -552,7 +567,10 @@ void PowerLossRecovery::ResumeCNC() {
 	planner.synchronize();
 
 	// enable CNC motor
-	cnc.SetOutput(pre_data_.cnc_power);
+	if (cnc_200w.IsOnline())
+		cnc_200w.Cnc200WSpeedSetting(pre_data_.cnc_power);
+	else
+		cnc.SetOutput(pre_data_.cnc_power);
 	LOG_I("Restore CNC power: %d\n", pre_data_.cnc_power);
 
 	// move to target Z
@@ -587,7 +605,8 @@ void PowerLossRecovery::ResumeLaser() {
 	// just change laser power but not enable output
 	laser->SetPower(pre_data_.laser_percent, cur_data_.laser_info.status.power_is_map);
 
-	if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) {
+	if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead() ||
+		MODULE_TOOLHEAD_LASER_RED_2W == ModuleBase::toolhead()) {
 		if (MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead())
 			laser->LaserBranchCtrl(!pre_data_.half_power_mode);
 		laser->SetAirPumpSwitch(pre_data_.air_pump_switch);
@@ -645,8 +664,8 @@ ErrCode PowerLossRecovery::ResumeWork() {
 		return E_NO_RESRC;
 	}
 
-	if (pre_data_.adapter != quick_change_adapter) {
-		LOG_E("quick_change_adapter mismatch, save adapter: %d, cur adapter: %d\n", pre_data_.adapter, quick_change_adapter);
+	if (pre_data_.adapter != kit_combination_type) {
+		LOG_E("kit_combination_type mismatch, save adapter: %d, cur adapter: %d\n", pre_data_.adapter, kit_combination_type);
 		return E_INVALID_STATE;
 	}
 
@@ -675,6 +694,11 @@ ErrCode PowerLossRecovery::ResumeWork() {
 		Resume3DP();
 		break;
 
+	case MODULE_TOOLHEAD_CNC_200W:
+		if (cnc_200w.cnc_error() & 0xFE) {
+			LOG_E("trigger RESTORE: failed, 200w cnc err_sta: 0x%x\n", cnc_200w.cnc_error());
+			return E_CNC_200W_SECURITY;
+		}
 	case MODULE_TOOLHEAD_CNC:
 		if (enclosure.DoorOpened()) {
 			LOG_E("trigger RESTORE: failed, door is open\n");
@@ -692,11 +716,17 @@ ErrCode PowerLossRecovery::ResumeWork() {
 
 	case MODULE_TOOLHEAD_LASER:
 	case MODULE_TOOLHEAD_LASER_10W:
-  case MODULE_TOOLHEAD_LASER_20W:
-  case MODULE_TOOLHEAD_LASER_40W:
+	case MODULE_TOOLHEAD_LASER_20W:
+	case MODULE_TOOLHEAD_LASER_40W:
+	case MODULE_TOOLHEAD_LASER_RED_2W:
 		if (enclosure.DoorOpened()) {
 			LOG_E("trigger RESTORE: failed, door is open\n");
 			return E_DOOR_OPENED;
+		}
+
+		if (laser->security_status_) {
+			LOG_E("trigger RESTORE: failed, laser security_status: 0x%x\n", laser->security_status_);
+			return E_LASER_SECURITY;
 		}
 
 		LOG_I("previous recorded target Laser power is %.2f\n", pre_data_.laser_percent);

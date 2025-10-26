@@ -27,6 +27,7 @@
 #include "../module/toolhead_cnc.h"
 #include "../module/toolhead_laser.h"
 #include "../module/toolhead_dualextruder.h"
+#include "../module/toolhead_cnc_200w.h"
 
 #include "../snapmaker.h"
 
@@ -129,7 +130,10 @@ ErrCode SystemService::PauseTrigger(TriggerSource type)
     // save the command line of heating Gcode
     taskEXIT_CRITICAL();
   }
-  pl_recovery.SaveCmdLine(CommandLine[cmd_queue_index_r]);
+
+  if (!ftMotion.cfg.modeHasShaper()) {
+    pl_recovery.SaveCmdLine(CommandLine[cmd_queue_index_r]);
+  }
 
   // clear event in queue to marlin
   xMessageBufferReset(sm2_handle->event_queue);
@@ -162,12 +166,16 @@ ErrCode SystemService::PreProcessStop() {
   if ((ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER) ||
       (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W) ||
       (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W) ||
-      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W)
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W) ||
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W)
   ) {
     laser->TurnOff();
     laser->SetAirPumpSwitch(false, false);
     is_waiting_gcode = false;
     is_laser_on = false;
+    if (laser->security_status_ & (1 << 5)) {
+      laser->SetFanPower(0, true);
+    }
   }
 
   // always reset the laser crosslight offset
@@ -286,7 +294,7 @@ void inline SystemService::RestoreXYZ(void) {
   planner.synchronize();
 
   // restore Z
-  if (MODULE_TOOLHEAD_CNC == ModuleBase::toolhead()) {
+  if (MODULE_TOOLHEAD_CNC == ModuleBase::toolhead() || MODULE_TOOLHEAD_CNC_200W == ModuleBase::toolhead()) {
     move_to_limited_z(pl_recovery.cur_data_.PositionData[Z_AXIS] + 15, 30);
     move_to_limited_z(pl_recovery.cur_data_.PositionData[Z_AXIS], 10);
   }
@@ -317,7 +325,10 @@ void inline SystemService::resume_3dp(void) {
 void inline SystemService::resume_cnc(void) {
   // enable CNC motor
   LOG_I("restore CNC power: %d\n", pl_recovery.cur_data_.cnc_power);
-  cnc.SetOutput(pl_recovery.cur_data_.cnc_power);
+  if (cnc_200w.IsOnline())
+    cnc_200w.Cnc200WSpeedSetting(pl_recovery.cur_data_.cnc_power);
+  else
+    cnc.SetOutput(pl_recovery.cur_data_.cnc_power);
 }
 
 void inline SystemService::resume_laser(void) {
@@ -328,7 +339,8 @@ void inline SystemService::resume_laser(void) {
   //         planner.laser_inline.status.isEnabled ? "ON" : "OFF",planner.laser_inline.status.trapezoid_power,
   //         planner.laser_inline.status.is_sync_power,planner.laser_inline.status.power_is_map, pl_recovery.cur_data_.laser_percent);
   // laser->SetPower(pl_recovery.cur_data_.laser_percent, pl_recovery.cur_data_.laser_info.status.power_is_map);
-  if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) {
+  if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead() ||
+      MODULE_TOOLHEAD_LASER_RED_2W == ModuleBase::toolhead()) {
     laser->SetAirPumpSwitch(pl_recovery.cur_data_.air_pump_switch);
     laser->SetCrossLightCAN(false);
     float ox, oy;
@@ -394,10 +406,22 @@ ErrCode SystemService::ResumeTrigger(TriggerSource source) {
     break;
 
   case MODULE_TOOLHEAD_CNC:
+  case MODULE_TOOLHEAD_CNC_200W:
   case MODULE_TOOLHEAD_LASER:
   case MODULE_TOOLHEAD_LASER_10W:
   case MODULE_TOOLHEAD_LASER_20W:
   case MODULE_TOOLHEAD_LASER_40W:
+  case MODULE_TOOLHEAD_LASER_RED_2W:
+    if (laser->IsOnline() && laser->security_status_) {
+      LOG_E("security_status_: 0x%x! Now cannot resume working!\n", laser->security_status_);
+      return E_LASER_SECURITY;
+    }
+
+    if (cnc_200w.cnc_error() & 0xFE) {
+			LOG_E("200w cnc err_sta: 0x%x! Now cannot resume working!\n", cnc_200w.cnc_error());
+			return E_CNC_200W_SECURITY;
+		}
+
     if (enclosure.DoorOpened()) {
       LOG_E("Door is opened!\n");
       fault_flag_ |= FAULT_FLAG_DOOR_OPENED;
@@ -428,6 +452,7 @@ ErrCode SystemService::ResumeProcess() {
     break;
 
   case MODULE_TOOLHEAD_CNC:
+  case MODULE_TOOLHEAD_CNC_200W:
     resume_cnc();
     break;
 
@@ -435,6 +460,7 @@ ErrCode SystemService::ResumeProcess() {
   case MODULE_TOOLHEAD_LASER_10W:
   case MODULE_TOOLHEAD_LASER_20W:
   case MODULE_TOOLHEAD_LASER_40W:
+  case MODULE_TOOLHEAD_LASER_RED_2W:
     resume_laser();
     break;
 
@@ -481,6 +507,7 @@ ErrCode SystemService::ResumeOver() {
   switch (ModuleBase::toolhead()) {
   case MODULE_TOOLHEAD_3DP:
   case MODULE_TOOLHEAD_DUALEXTRUDER:
+    RunoutResponseDelayed::modify_runout_distance_mm(FILAMENT_RUNOUT_DISTANCE_MM);
     if (runout.is_filament_runout()) {
       LOG_E("No filemant! Please insert filemant!\n");
       PauseTrigger(TRIGGER_SOURCE_RUNOUT);
@@ -488,21 +515,29 @@ ErrCode SystemService::ResumeOver() {
     }
     // filament has been retracted for 6mm in resume process
     // we pre-extruder 6.2 to get better print quality
-    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER)
+    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER) {
       current_position[E_AXIS] += (DUAL_EXTRUDER_RESUME_RETRACT_E_LENGTH + 0.2);
-    else
+    }
+    else {
       current_position[E_AXIS] += (SINGLE_RESUME_RETRACT_E_LENGTH + 0.2);
+    }
+
     line_to_current_position(5);
     planner.synchronize();
+    if (ftMotion.cfg.modeHasShaper()) {
+      ftMotion.reset();
+    }
     current_position[E_AXIS] = pl_recovery.cur_data_.PositionData[E_AXIS];
     sync_plan_position_e();
     break;
 
   case MODULE_TOOLHEAD_CNC:
+  case MODULE_TOOLHEAD_CNC_200W:
   case MODULE_TOOLHEAD_LASER:
   case MODULE_TOOLHEAD_LASER_10W:
   case MODULE_TOOLHEAD_LASER_20W:
   case MODULE_TOOLHEAD_LASER_40W:
+  case MODULE_TOOLHEAD_LASER_RED_2W:
     if (enclosure.DoorOpened()) {
       LOG_E("Door is opened, please close the door!\n");
       PauseTrigger(TRIGGER_SOURCE_DOOR_OPEN);
@@ -512,7 +547,8 @@ ErrCode SystemService::ResumeOver() {
     if ((ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER) ||
         (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W) ||
         (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W) ||
-        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W)
+        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W) ||
+        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W)
     ) {
       planner.laser_inline.status = pl_recovery.cur_data_.laser_info.status;
       laser->SetPower(pl_recovery.cur_data_.laser_percent, pl_recovery.cur_data_.laser_info.status.power_is_map);
@@ -680,10 +716,17 @@ ErrCode SystemService::StartWork(TriggerSource s) {
   case MODULE_TOOLHEAD_LASER_10W:
   case MODULE_TOOLHEAD_LASER_20W:
   case MODULE_TOOLHEAD_LASER_40W:
+  case MODULE_TOOLHEAD_LASER_RED_2W:
+    if (laser->security_status_) {
+      LOG_E("security_status_: 0x%x! Now cannot start working!\n", laser->security_status_);
+      return E_LASER_SECURITY;
+    }
     is_laser_on = false;
     is_waiting_gcode = false;
-    if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) {
+    if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead() ||
+        MODULE_TOOLHEAD_LASER_RED_2W == ModuleBase::toolhead()) {
       laser->SetCrossLightCAN(false);
+      laser->SetXyOffsetApplication(XY_OFFSET_APPLICATION_FALG);
       float ox, oy;
       if (E_SUCCESS == laser->GetCrossLightOffsetCAN(ox, oy)) {
         LOG_I("StartWork: Set laser crosslight offset: %f, %f\n", ox, oy);
@@ -696,11 +739,17 @@ ErrCode SystemService::StartWork(TriggerSource s) {
     }
 
   case MODULE_TOOLHEAD_CNC:
+  case MODULE_TOOLHEAD_CNC_200W:
     if (enclosure.DoorOpened()) {
       fault_flag_ |= FAULT_FLAG_DOOR_OPENED;
       LOG_E("Door is opened!\n");
       return E_DOOR_OPENED;
     }
+
+    if (cnc_200w.cnc_error() & 0xFE) {
+			LOG_E("200w cnc err_sta: 0x%x! Now cannot start working!\n", cnc_200w.cnc_error());
+			return E_CNC_200W_SECURITY;
+		}
 
     if (is_homing()) {
       LOG_E("Is homing!\n");
@@ -713,6 +762,10 @@ ErrCode SystemService::StartWork(TriggerSource s) {
     // set to defualt power, but not turn on Motor
     if (MODULE_TOOLHEAD_CNC == ModuleBase::toolhead()) {
       cnc.power(100);
+    }
+
+    if (MODULE_TOOLHEAD_CNC_200W == ModuleBase::toolhead()) {
+      cnc_200w.power(100);
     }
     break;
 
@@ -1784,13 +1837,16 @@ ErrCode SystemService::SendStatus(SSTP_Event_t &event) {
   if (ModuleBase::toolhead() == MACHINE_TYPE_LASER ||
       ModuleBase::toolhead() == MACHINE_TYPE_LASER_10W ||
       ModuleBase::toolhead() == MACHINE_TYPE_LASER_20W ||
-      ModuleBase::toolhead() == MACHINE_TYPE_LASER_40W) {
+      ModuleBase::toolhead() == MACHINE_TYPE_LASER_40W ||
+      ModuleBase::toolhead() == MACHINE_TYPE_LASER_RED_2W) {
     // laser power
     tmp_u32 = (uint32_t)(laser->power() * 1000);
   } else if (ModuleBase::toolhead() == MACHINE_TYPE_CNC) {
 
     // RPM of CNC
     tmp_u32 = cnc.rpm();
+  } else if (ModuleBase::toolhead() == MACHINE_TYPE_CNC_200W) {
+    tmp_u32 = cnc_200w.rpm();
   } else {
     // 3DPrint
     tmp_u32 = 0;
@@ -1851,7 +1907,8 @@ ErrCode SystemService::SendException(uint32_t fault) {
 ErrCode SystemService::SendSecurityStatus () {
   if ((ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W) ||
       (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W) ||
-      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W)
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W) ||
+      (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W)
   ) {
     laser->SendSecurityStatus();
   }
@@ -2036,6 +2093,7 @@ ErrCode SystemService::RecoverFromPowerLoss(SSTP_Event_t &event) {
     err = E_NO_SWITCHING_STA;
   }
   else {
+    systemservice.recover_powerloss_flag = true;
     // screen bug: why will we receive two consecutive recovery command @TODO
     systemservice.SetCurrentStatus(SYSTAT_RESUME_TRIG);
     err = pl_recovery.ResumeWork();
@@ -2069,7 +2127,7 @@ ErrCode SystemService::RecoverFromPowerLoss(SSTP_Event_t &event) {
       systemservice.SetCurrentStatus(cur_status);
     }
   }
-
+  systemservice.recover_powerloss_flag = false;
   return hmi.Send(event);
 }
 
@@ -2142,7 +2200,8 @@ ErrCode SystemService::ChangeRuntimeEnv(SSTP_Event_t &event) {
 
   switch (type) {
   case RENV_TYPE_FEEDRATE:
-    if (param > 500 || param < 0) {
+    //  It is not allowed to set less than 1, by hwy
+    if (param > 500 || param <= 0.9999) {
       LOG_E("invalid feedrate scaling: %.2f\n", param);
       ret = E_PARAM;
       break;
@@ -2194,7 +2253,8 @@ ErrCode SystemService::ChangeRuntimeEnv(SSTP_Event_t &event) {
     if ((ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER) &&
         (ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER_10W) &&
         (ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER_20W) &&
-        (ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER_40W)
+        (ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER_40W) &&
+        (ModuleBase::toolhead() != MODULE_TOOLHEAD_LASER_RED_2W)
     ) {
       ret = E_INVALID_STATE;
       break;
@@ -2220,7 +2280,7 @@ ErrCode SystemService::ChangeRuntimeEnv(SSTP_Event_t &event) {
     break;
 
   case RENV_TYPE_CNC_POWER:
-    if (MODULE_TOOLHEAD_CNC != ModuleBase::toolhead()) {
+    if (MODULE_TOOLHEAD_CNC != ModuleBase::toolhead() || MODULE_TOOLHEAD_CNC_200W != ModuleBase::toolhead() ) {
       ret = E_INVALID_STATE;
       LOG_E("Not CNC toolhead!\n");
       break;
@@ -2232,9 +2292,14 @@ ErrCode SystemService::ChangeRuntimeEnv(SSTP_Event_t &event) {
     }
     else {
       cnc.power(param);
+      cnc_200w.power(param);
       // change current output when it was turned on
       if (cnc.rpm() > 0)
         cnc.TurnOn();
+
+      if (cnc_200w.cnc_state() == CNC_OUTPUT_ON)
+        cnc_200w.Cnc200WSpeedSetting(cnc_200w.power());
+
       LOG_I("new CNC power: %.2f\n", param);
     }
     break;
@@ -2444,7 +2509,8 @@ ErrCode SystemService::CallbackPreQS(QuickStopSource source) {
     if ((ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER) ||
         (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_10W) ||
         (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_20W) ||
-        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W)
+        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_40W) ||
+        (ModuleBase::toolhead() == MODULE_TOOLHEAD_LASER_RED_2W)
     ) {
       laser->TurnOff();
     }

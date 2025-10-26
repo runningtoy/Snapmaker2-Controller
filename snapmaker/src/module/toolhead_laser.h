@@ -34,9 +34,18 @@
 #define TOOLHEAD_LASER_CAMERA_FOCUS_MAX             (65000)  // mm*1000
 #define INVALID_OFFSET                              (-10000)
 
+#define LASER_1_6W_DEFAULT_WEAK_POWER      (0.5)
+#define LASER_10W_DEFAULT_WEAK_POWER       (1.0)
+#define LASER_20W_40W_DEFAULT_WEAK_POWER   (0.2)
+#define LASER_WEAK_POWER_MAX_LIMIT         (3.0)
+#define LASER_WEAK_POWER_MIN_LIMIT         (0.2)
 
 #define FIRE_DETECT_TRIGGER_LIMIT_ADC_VALUE     (4095)
 #define FIRE_DETECT_TRIGGER_DISABLE_ADC_VALUE   (0xFFFF)
+
+#define X_OFFSET_IS_APPLICATION_MASK              (0x1 << X_AXIS)
+#define Y_OFFSET_IS_APPLICATION_MASK              (0x1 << Y_AXIS)
+#define XY_OFFSET_APPLICATION_FALG                (X_OFFSET_IS_APPLICATION_MASK | Y_OFFSET_IS_APPLICATION_MASK)
 
 enum ToolheadLaserFanState {
   TOOLHEAD_LASER_FAN_STATE_OPEN,
@@ -126,6 +135,9 @@ class ToolHeadLaser: public ModuleBase {
       half_power_mode_ = false;
       air_pump_switch_ = false;
       weak_light_origin_mode_ = false;
+      xy_offset_application_ = XY_OFFSET_APPLICATION_FALG;
+      weak_light_power_update_ = false;
+      weak_light_power_ = LASER_10W_DEFAULT_WEAK_POWER;
     }
 
     ErrCode Init(MAC_t &mac, uint8_t mac_index);
@@ -136,7 +148,7 @@ class ToolHeadLaser: public ModuleBase {
     void PwmCtrlDirectly(uint8_t duty);
     void TurnOff();
 
-    void SetFanPower(uint8_t power);  // power 0 - 100
+    void SetFanPower(uint8_t power, bool update_fan_sta=false);  // power 0 - 100
 
     void SetPower(float power, bool is_map=true);       // change power_val_ and power_pwm_ but not change actual output
     void SetOutput(float power, bool is_map=true);      // change power_val_, power_pwm_ and actual output
@@ -151,9 +163,14 @@ class ToolHeadLaser: public ModuleBase {
     bool GetHalfPowerMode(void) { return half_power_mode_; }
     bool SetWeakLightOriginMode(bool mode);
     bool GetWeakLightOriginMode(void) { return weak_light_origin_mode_; }
+    uint8_t GetXyOffsetApplication(void) { return xy_offset_application_; }
+    void SetXyOffsetApplication(uint8_t xy_offset_application) { xy_offset_application_ = xy_offset_application; }
+    void ClearXyOffsetApplicationByIndex(uint8_t index) { xy_offset_application_ &= ~(1 << index); }
 
     ErrCode SetCrossLightCAN(bool sw);
     ErrCode GetCrossLightCAN(bool &sw);
+    ErrCode GetWeakLightPowerCAN(float &power);
+    ErrCode SetWeakLightPowerCAN(float power);
     ErrCode SetFireSensorSensitivityCAN(uint16 sen);
     ErrCode GetFireSensorSensitivityCAN(uint16 &sen);
     ErrCode SetFireSensorReportTime(uint16 itv);
@@ -191,6 +208,8 @@ class ToolHeadLaser: public ModuleBase {
     ErrCode SetCrosslightOffset(SSTP_Event_t &event);
     ErrCode GetCrosslightOffset(SSTP_Event_t &event);
     ErrCode SetWeakLightOriginWork(SSTP_Event_t &event);
+    ErrCode GetWeakLightPower(SSTP_Event_t &event);
+    ErrCode SetWeakLightPower(SSTP_Event_t &event);
 
     void TellSecurityStatus();
     uint8_t LaserGetPwmPinState();
@@ -215,6 +234,17 @@ class ToolHeadLaser: public ModuleBase {
     }
 
     ToolHeadLaserState state() { return state_; }
+
+    bool is_there_fire_sensor(void);
+    bool is_there_camera(void);
+    bool is_there_cross_light(void);
+    ErrCode LaserGetHWVersion(uint8_t &version);
+    ErrCode set_get_protect_temp(int8_t &protect_upper, int8_t &recovery_upper, int8_t &protect_lower, int8_t &recovery_lower);
+    void show_important_info_1(void);
+    void set_inline_pwm_power_floor(uint16_t v) { inline_pwm_power_floor = v; }
+    uint16_t get_inline_pwm_power_floor() { return inline_pwm_power_floor; }
+    bool is_there_standby_mode(void);
+    ErrCode set_module_standby_mode(bool standby);
 
   private:
     void    CheckFan(uint16_t pwm);
@@ -243,6 +273,7 @@ class ToolHeadLaser: public ModuleBase {
     bool laser_pwm_pin_checked_;
     uint8_t pwm_pin_pullup_state_;
     uint8_t pwm_pin_pulldown_state_;
+    uint16_t inline_pwm_power_floor;
 
   public:
     uint8_t security_status_;
@@ -264,6 +295,10 @@ class ToolHeadLaser: public ModuleBase {
     bool half_power_mode_;
     bool air_pump_switch_;
     bool weak_light_origin_mode_;
+    uint8_t xy_offset_application_;
+    bool weak_light_power_update_;
+    float weak_light_power_;
+    uint8_t hw_version_ = 0xFF;
 
   // Laser Inline Power functions
   public:
@@ -290,5 +325,6 @@ extern ToolHeadLaser laser_1_6_w;
 extern ToolHeadLaser laser_10w;
 extern ToolHeadLaser laser_20w;
 extern ToolHeadLaser laser_40w;
+extern ToolHeadLaser laser_red_2w;
 
 #endif  // #ifndef TOOLHEAD_LASER_H_

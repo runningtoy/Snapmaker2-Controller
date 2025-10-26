@@ -35,6 +35,7 @@
 #include "toolhead_cnc.h"
 #include "toolhead_laser.h"
 #include "purifier.h"
+#include "toolhead_cnc_200w.h"
 
 // marlin headers
 #include "src/Marlin.h"
@@ -57,6 +58,8 @@ ModuleBase *static_modules[] = {
   &laser_10w,
   &laser_20w,
   &laser_40w,
+  &cnc_200w,
+  &laser_red_2w,
   NULL
 };
 
@@ -220,6 +223,29 @@ ErrCode ModuleBase::InitModule8p(MAC_t &mac, int dir_pin, uint8_t index) {
 }
 
 
+bool ModuleBase::IsKindOfToolhead(module_toolhead_kind_t kind_bits) {
+  switch (toolhead_) {
+    case MODULE_TOOLHEAD_3DP:
+    case MODULE_TOOLHEAD_DUALEXTRUDER:
+        return (kind_bits & MODULE_TOOLHEAD_KIND_FDM)? true: false;
+
+    case MODULE_TOOLHEAD_LASER:
+    case MODULE_TOOLHEAD_LASER_10W:
+    case MODULE_TOOLHEAD_LASER_20W:
+    case MODULE_TOOLHEAD_LASER_40W:
+      return (kind_bits & MODULE_TOOLHEAD_KIND_LASER)? true: false;
+
+    case MODULE_TOOLHEAD_CNC:
+    case MODULE_TOOLHEAD_CNC_200W:
+      return (kind_bits & MODULE_TOOLHEAD_KIND_CNC)? true: false;
+
+    default:
+      return (kind_bits & MODULE_TOOLHEAD_KIND_INVALID)? true: false;
+  }
+
+  return false;
+}
+
 void ModuleBase::LockMarlinUart(LockMarlinUartSource source) {
   lock_marlin_uart_ = true;
   lock_marlin_source_ = max(lock_marlin_source_, source);
@@ -337,6 +363,9 @@ void ModuleBase::StaticProcess() {
   laser_10w.Process();
   laser_20w.Process();
   laser_40w.Process();
+  laser_red_2w.Process();
+  cnc.Process();
+  cnc_200w.Process();
 
   if (++timer_in_static_process_ < 100) return;
   timer_in_static_process_ = 0;
