@@ -37,7 +37,7 @@ As of recommended in Marlin's development settings, we use **Visual Studio Code*
 - Clone [Snapmaker2-Controller repo](https://github.com/Snapmaker/Snapmaker2-Controller) using Git to your local folder.
 
 ```shell
-> git clone git@github.com:Snapmaker/Snapmaker2-Controller.git
+> git clone https://github.com/runningtoy/Snapmaker2-Controller.git
 ```
 
 - Open downloaded repo in **VSCode**
